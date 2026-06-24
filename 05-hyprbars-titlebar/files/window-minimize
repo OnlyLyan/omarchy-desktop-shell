@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Minimizar/restaurar janelas no Hyprland (que nao tem minimize nativo).
+#   minimize  -> manda a janela ativa pro workspace ESPECIAL "special:minimized"
+#                (oculto por design: NUNCA vira o workspace ativo de um monitor),
+#                lembrando workspace+monitor de origem no store.
+#   restore   -> traz de volta a ultima minimizada (origem do store; se o store
+#                dessincronizar, resgata qualquer janela presa pro ws ativo).
+# IMPORTANTE: usamos SPECIAL via movetoworkspacesilent (nunca togglespecialworkspace),
+# entao o workspace de minimizados fica sempre invisivel. O workspace NOMEADO antigo
+# ("name:minimized") virava um ws de id negativo que aparecia no monitor secundario.
+# Store em /tmp/minimized-windows (linhas "<address> <ws_origem> <monitorID>", LIFO),
+# reconciliado contra os clients a cada operacao (remove fantasmas).
+set -uo pipefail
+
+STORE="/tmp/minimized-windows"
+SPECIAL="special:minimized"
+
+minimized_addrs() {
+  hyprctl clients -j 2>/dev/null | jq -r --arg w "$SPECIAL" '.[]|select(.workspace.name==$w)|.address'
+}
+
+# INVARIANTE: o store guarda SO janelas atualmente em special:minimized. Remove
+# entradas de janelas que foram restauradas (saíram do special) ou fechadas. Assim
+# o store se auto-corrige e nunca acumula fantasmas.
+prune_store() {
+  [ -s "$STORE" ] || return 0
+  local mins tmp
+  mins="$(minimized_addrs)"
+  tmp="$(mktemp)"
+  while read -r a w m; do
+    [ -n "$a" ] || continue
+    if printf '%s\n' "$mins" | grep -qx "$a"; then
+      printf '%s %s %s\n' "$a" "$w" "$m"
+    fi
+  done < "$STORE" > "$tmp"
+  mv "$tmp" "$STORE"
+}
+
+case "${1:-minimize}" in
+  minimize)
+    info="$(hyprctl activewindow -j 2>/dev/null)"
+    addr="$(printf '%s' "$info" | jq -r '.address // empty')"
+    wsid="$(printf '%s' "$info" | jq -r '.workspace.id // empty')"
+    wsname="$(printf '%s' "$info" | jq -r '.workspace.name // empty')"
+    mon="$(printf '%s' "$info" | jq -r '.monitor // empty')"
+    [ -n "$addr" ] || exit 0
+    case "$wsname" in special:*) exit 0 ;; esac      # ja oculta/especial
+    prune_store
+    # remove entrada antiga deste address (evita duplicata no store)
+    if [ -s "$STORE" ]; then
+      grep -v "^$addr " "$STORE" > "$STORE.tmp" 2>/dev/null || true
+      mv "$STORE.tmp" "$STORE" 2>/dev/null || true
+    fi
+    printf '%s %s %s\n' "$addr" "$wsid" "$mon" >> "$STORE"
+    hyprctl dispatch movetoworkspacesilent "$SPECIAL,address:$addr" >/dev/null 2>&1
+    ;;
+
+  restore)
+    prune_store                       # reconcilia: store = so as minimizadas agora
+    mins="$(minimized_addrs)"
+    [ -n "$mins" ] || exit 0          # nada minimizado -> store ja esta vazio
+
+    addr=""; ws=""
+    if [ -s "$STORE" ]; then
+      mapfile -t lines < "$STORE"
+      for ((i=${#lines[@]}-1; i>=0; i--)); do
+        a="$(awk '{print $1}' <<<"${lines[i]}")"
+        if printf '%s\n' "$mins" | grep -qx "$a"; then
+          addr="$a"; ws="$(awk '{print $2}' <<<"${lines[i]}")"
+          unset 'lines[i]'
+          printf '%s\n' "${lines[@]}" | sed '/^$/d' > "$STORE"
+          break
+        fi
+      done
+    fi
+    if [ -z "$addr" ]; then     # resgate de orfa: ultima do special -> ws ativo atual
+      addr="$(printf '%s\n' "$mins" | tail -1)"
+      ws="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id')"
+    fi
+    [ -n "$addr" ] || exit 0
+    # ws de origem invalido/oculto -> manda pro ws ativo atual
+    case "$ws" in ""|-*|0) ws="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id')" ;; esac
+    case "$ws" in ""|-*|0) ws=1 ;; esac
+    # mover pro ws de origem ja restaura no monitor certo (o ws pertence ao monitor)
+    hyprctl dispatch movetoworkspacesilent "${ws},address:$addr" >/dev/null 2>&1
+    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+    ;;
+esac
