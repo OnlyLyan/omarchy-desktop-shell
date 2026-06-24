@@ -30,6 +30,11 @@ arquivos reais) e `install.sh` idempotente.
   taskbar da barra (pasta 06, `taskbar-activate.sh`) le esse mesmo store pra RESTAURAR a janela no
   workspace/monitor de origem. As duas pastas compartilham essa convencao.
 
+### Versoes testadas
+- Hyprland `0.55.2` (tag v0.55.2)
+- Quickshell `0.3.0` (AUR `quickshell-git`, revision 68c2c85), compilado contra Qt `6.11.1`
+- Omarchy (Arch + Hyprland), Wayland, PipeWire
+
 ### Dependencias externas (pacotes/plugins)
 - `quickshell-git` (AUR), compilado contra Qt 6.11.1 (o oficial contra 6.11.0 quebra).
 - Plugin `hyprbars` do repo `hyprland-plugins`, via `hyprpm`.
