@@ -4,8 +4,8 @@ Shell de desktop estilo Windows para Hyprland (Omarchy / Arch + Wayland): uma ba
 Quickshell que substitui a waybar, Alt+Tab com miniaturas ao vivo, e barra de titulo com botoes
 de fechar/minimizar/maximizar. Os tres componentes integram entre si.
 
-Ambiente: Omarchy (Arch + Hyprland), Wayland, PipeWire, Bash. Caminhos com `~` sao relativos a
-`/home/lucas`. Cada pasta tem `README.md` (o que faz, por que, como foi feito), `files/` (os
+Ambiente: Omarchy (Arch + Hyprland), Wayland, PipeWire, Bash. Caminhos com `~` sao relativos
+ao seu HOME. Cada pasta tem `README.md` (o que faz, por que, como foi feito), `files/` (os
 arquivos reais) e `install.sh` idempotente.
 
 ## Componentes

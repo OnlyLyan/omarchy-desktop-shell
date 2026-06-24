@@ -1,5 +1,5 @@
 //@ pragma UseQApplication
-// Barra do Lucas em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
+// Barra em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
 // Iteracao 1: menu Omarchy + taskbar agrupada + relogio. Modulos de status virao depois.
 import Quickshell
 import Quickshell.Wayland
@@ -14,6 +14,7 @@ import QtQuick.Layouts
 
 ShellRoot {
     id: root
+    readonly property string scripts: Quickshell.env("HOME") + "/.config/quickshell/scripts"
     // estado global: central de acoes (dropdown estilo Windows) aberta?
     property bool acOpen: false
     property var acScreen: null   // monitor onde a central abre (o do chevron clicado)
@@ -75,7 +76,7 @@ ShellRoot {
     property var wifiNets: []
     Process {
         id: wifiListProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi-list.sh"]
+        command: [root.scripts + "/wifi-list.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -92,7 +93,7 @@ ShellRoot {
     }
     function refreshWifi() { wifiListProc.running = true; }
     function connectWifi(name) {
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/wifi-connect.sh", name]);
+        Quickshell.execDetached([root.scripts + "/wifi-connect.sh", name]);
     }
 
     // ---- clima (omarchy-weather): poll raro, curl a wttr.in ----
@@ -106,7 +107,7 @@ ShellRoot {
     }
     Process {
         id: weatherProc
-        command: ["/home/lucas/.config/quickshell/scripts/weather.sh"]
+        command: [root.scripts + "/weather.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var p = this.text.trim().split("\t");
@@ -212,7 +213,7 @@ ShellRoot {
         // pro workspace/monitor de origem. activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
-                "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                root.scripts + "/taskbar-activate.sh",
                 tl.appId, tl.title || "", "max"]);
         else
             tl.activate();
@@ -369,7 +370,7 @@ ShellRoot {
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
                                     // cru, que trazia o overlay especial e travava.
                                     Quickshell.execDetached([
-                                        "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                        root.scripts + "/taskbar-activate.sh",
                                         appBtn.modelData.appId]);
                                 }
                             }
@@ -427,7 +428,7 @@ ShellRoot {
                                                         if (!win) return;
                                                         // foca/restaura a janela ESPECIFICA (por titulo) via script
                                                         Quickshell.execDetached([
-                                                            "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                                            root.scripts + "/taskbar-activate.sh",
                                                             appBtn.modelData.appId, win.title || ""]);
                                                     }
                                                 }
