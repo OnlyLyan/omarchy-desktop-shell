@@ -15,6 +15,7 @@ arquivos reais) e `install.sh` idempotente.
 | `05-hyprbars-titlebar` | Barra de titulo com botoes semaforo + minimizar custom (plugin hyprbars + `window-minimize`) |
 | `06-barra-quickshell` | Barra propria em Quickshell que substitui a waybar (taskbar agrupada, central de acoes) |
 | `07-alttab-quickshell` | Alt+Tab estilo Windows com thumbnail ao vivo (overlay no mesmo processo da barra) |
+| `08-bonus-opcional` | Extras OPCIONAIS (wallpaper-engine, tts-read) que a barra chama em dois botoes; instalador interativo, nao obrigatorio |
 
 ## Dependencias
 

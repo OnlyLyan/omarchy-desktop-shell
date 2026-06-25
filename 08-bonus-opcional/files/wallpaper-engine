@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Controlador unico do wallpaper animado (linux-wallpaperengine) + integracao
+# com o Wallpaper Engine do Steam (app 431960) pra baixar mais wallpapers.
+#
+# Problema que resolve: o linux-wallpaperengine segura a GPU; com ele rodando o
+# Wallpaper Engine do Steam nao abre direito. Antes era preciso matar o processo
+# na mao toda vez. Agora o fluxo e:
+#   wallpaper-engine browse    desliga o linux-wpe e abre o Steam WE pra baixar
+#   (baixa no Workshop, fecha o Steam WE)
+#   wallpaper-engine on <id>   liga o wallpaper escolhido (ou clica na barra)
+#
+# Comandos:
+#   wallpaper-engine on [id]   liga o linux-wpe (usa o id salvo se omitir)
+#   wallpaper-engine off       desliga o linux-wpe (libera a GPU)
+#   wallpaper-engine toggle    alterna on/off
+#   wallpaper-engine browse    desliga o linux-wpe e abre o Steam WE
+#   wallpaper-engine <id>      atalho pra 'on <id>'
+#   wallpaper-engine list      lista os baixados: id|tipo|titulo
+#   wallpaper-engine status    running:<id> | stopped
+#
+# Tipos 'web' podem crashar nesta build; cena/video sao estaveis.
+# O id escolhido fica salvo em ~/.local/state/wallpaper-engine/last-id e e o que
+# o autostart usa no login.
+set -uo pipefail
+
+STATE_DIR="$HOME/.local/state/wallpaper-engine"
+STATE_FILE="$STATE_DIR/last-id"
+WORKSHOP="$HOME/.steam/steam/steamapps/workshop/content/431960"
+WE_HOME="$HOME/.local/share/Steam/steamapps/common/wallpaper_engine"
+DEFAULTS="$WE_HOME/projects/defaultprojects"
+STEAM_APPID=431960
+DEFAULT_ID=2460424382
+mkdir -p "$STATE_DIR"
+
+# OBS: o kernel trunca o nome do processo (comm) em 15 chars, entao
+# 'linux-wallpaperengine' aparece como 'linux-wallpaper'. Casamos por esse
+# comm exato (-x): nao pega o proprio controlador nem o shell (footgun do -f).
+stop_wpe()   { pkill -x linux-wallpaper 2>/dev/null; }
+is_running() { pgrep -x linux-wallpaper >/dev/null 2>&1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+warn() {
+  echo "wallpaper-engine: $1" >&2
+  have notify-send && notify-send -a "Wallpaper" "Wallpaper Engine" "$1" 2>/dev/null || true
+}
+
+saved_id() {
+  local id; id="$(cat "$STATE_FILE" 2>/dev/null)"
+  [ -n "$id" ] && echo "$id" || echo "$DEFAULT_ID"
+}
+
+start_wpe() {
+  if ! have linux-wallpaperengine; then
+    warn "linux-wallpaperengine nao instalado (AUR: linux-wallpaperengine-git)."
+    return 1
+  fi
+  local id="${1:-}"
+  [ -z "$id" ] && id="$(saved_id)"
+  stop_wpe
+  sleep 0.4
+  echo "$id" > "$STATE_FILE"
+  local roots=() m
+  for m in $(hyprctl monitors -j 2>/dev/null | jq -r '.[].name'); do
+    roots+=(--screen-root "$m")
+  done
+  # --silent: wallpaper nao estoura audio proprio (visualizers ainda reagem ao
+  # som do sistema; isso so muta o audio que o wallpaper produz).
+  setsid -f linux-wallpaperengine --silent "${roots[@]}" "$id" >/dev/null 2>&1
+}
+
+# Imprime uma linha TSV por wallpaper instalado (workshop + defaults da WE):
+#   token \t kind \t audio \t title \t preview_abs
+#   token = id numerico (workshop) ou caminho do projeto (default)
+#   kind  = ok (scene/video) | web (incompativel, crasha) | app (incompativel)
+#   audio = 1 se o video tem trilha de audio (best-effort via ffprobe), senao 0
+list_one() {
+  local dir="$1" token="$2" pj="$1/project.json"
+  [ -f "$pj" ] || return
+  local title type file preview
+  title="$(jq -r '.title // "?"' "$pj" 2>/dev/null)"
+  type="$(jq -r '(.type // "") | ascii_downcase' "$pj" 2>/dev/null)"
+  file="$(jq -r '.file // ""' "$pj" 2>/dev/null)"
+  preview="$(jq -r '.preview // ""' "$pj" 2>/dev/null)"
+  local pabs=""
+  [ -n "$preview" ] && [ -f "$dir/$preview" ] && pabs="$dir/$preview"
+  local kind rank audio=0
+  case "$type" in
+    scene|video) kind=ok;  rank=0 ;;
+    web)         kind=web; rank=1 ;;
+    # type ausente (null): cena com .json (ex audiophile/techno) e ok; resto e app
+    "")          case "$file" in *.json) kind=ok; rank=0 ;; *) kind=app; rank=2 ;; esac ;;
+    *)           kind=app; rank=2 ;;
+  esac
+  # apps Windows (.exe, ex sheep) nunca rodam no Linux
+  case "$file" in *.exe) kind=app; rank=2 ;; esac
+  if [ "$type" = video ] && have ffprobe && [ -n "$file" ] && [ -f "$dir/$file" ]; then
+    ffprobe -v error -select_streams a -show_entries stream=codec_type \
+      -of csv=p=0 "$dir/$file" 2>/dev/null | grep -q audio && audio=1
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$token" "$kind" "$audio" "$title" "$pabs"
+}
+
+case "${1:-on}" in
+  off|stop)     stop_wpe ;;
+  on|start)     start_wpe "${2:-}" ;;
+  toggle)       if is_running; then stop_wpe; else start_wpe; fi ;;
+  browse|edit)
+    if ! have steam; then
+      warn "Steam nao instalado. Wallpaper Engine e um app pago do Steam (workshop $STEAM_APPID)."
+      exit 1
+    fi
+    stop_wpe
+    sleep 0.3
+    setsid -f steam "steam://rungameid/$STEAM_APPID" >/dev/null 2>&1
+    ;;
+  list)
+    {
+      for d in "$WORKSHOP"/*/;  do [ -d "$d" ] && list_one "$d" "$(basename "$d")"; done
+      for d in "$DEFAULTS"/*/;  do [ -d "$d" ] && list_one "$d" "$d"; done
+    } | sort -t$'\t' -k1,1n -k5,5 | cut -f2-
+    ;;
+  status)       if is_running; then echo "running:$(saved_id)"; else echo "stopped"; fi ;;
+  *[0-9]*)      start_wpe "$1" ;;
+  *)
+    echo "uso: wallpaper-engine {on [id]|off|toggle|browse|list|status|<id>}" >&2
+    exit 1
+    ;;
+esac

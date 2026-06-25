@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Le em voz alta o texto SELECIONADO via piper (TTS neural offline pt-BR).
+# Uso:
+#   tts-read           -> le a selecao primaria do Wayland (fallback: clipboard)
+#   tts-read "texto"   -> le o texto passado
+#   tts-read stop      -> interrompe qualquer fala em andamento
+#   tts-read toggle    -> se estiver falando, para; senao, le a selecao
+# Binds: SUPER+R = ler ; SUPER+SHIFT+R = stop ; Pause = toggle.
+set -uo pipefail
+
+PIPER="$HOME/.local/share/piper/piper/piper"
+VOICE="$HOME/.local/share/piper/voices/pt_BR-faber-medium.onnx"
+CLEAN="$HOME/.claude/hooks/tts-clean.py"
+
+# mata na hora (SIGKILL) o sintetizador e o player. SIGKILL pois o pw-cat com
+# SIGTERM drena o buffer antes de sair, o que dava sensacao de delay ao parar.
+stop_speech() {
+  pkill -9 -x piper 2>/dev/null || true
+  pkill -9 -x pw-cat 2>/dev/null || true
+}
+
+# esta falando? o piper termina cedo (gera rapido e morre); quem segura o audio
+# e o pw-cat. Entao checar os dois, senao o toggle nao detecta a fala em andamento.
+is_speaking() {
+  pgrep -x piper >/dev/null 2>&1 || pgrep -x pw-cat >/dev/null 2>&1
+}
+
+# resolve o comando / texto
+cmd="${1:-read}"
+case "$cmd" in
+  stop)
+    stop_speech; exit 0 ;;
+  toggle)
+    # falando? entao para e sai. senao, segue para ler a selecao.
+    if is_speaking; then stop_speech; exit 0; fi
+    text="" ;;
+  read)
+    text="" ;;
+  *)
+    text="$1" ;;   # texto literal
+esac
+
+[ -x "$PIPER" ] || { notify-send "TTS" "piper nao encontrado" 2>/dev/null || true; exit 0; }
+[ -f "$VOICE" ] || { notify-send "TTS" "voz nao encontrada" 2>/dev/null || true; exit 0; }
+
+# texto: selecao primaria > clipboard (quando nao veio texto literal)
+[ -n "$text" ] || text="$(wl-paste --primary --no-newline 2>/dev/null || true)"
+[ -n "$text" ] || text="$(wl-paste --no-newline 2>/dev/null || true)"
+[ -n "$text" ] || { notify-send "TTS" "nada selecionado" 2>/dev/null || true; exit 0; }
+
+clean="$(printf '%s' "$text" | python3 "$CLEAN" 2>/dev/null)"
+[ -n "$clean" ] || exit 0
+
+rate="$(jq -r '.audio.sample_rate // 22050' "${VOICE}.json" 2>/dev/null || echo 22050)"
+
+# interrompe qualquer fala atual antes de iniciar a nova leitura
+stop_speech
+
+setsid bash -c '
+  printf "%s" "$1" | "$2" --model "$3" --output_raw 2>/dev/null \
+    | pw-cat -p --rate "$4" --channels 1 --format s16 --raw - 2>/dev/null
+' _ "$clean" "$PIPER" "$VOICE" "$rate" </dev/null >/dev/null 2>&1 &
+exit 0
