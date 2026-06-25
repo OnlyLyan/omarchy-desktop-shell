@@ -63,9 +63,23 @@ start_wpe() {
   for m in $(hyprctl monitors -j 2>/dev/null | jq -r '.[].name'); do
     roots+=(--screen-root "$m")
   done
+  # overrides de propriedades por wallpaper (desliga widgets bugados de cada cena):
+  # arquivo ~/.local/state/wallpaper-engine/props/<id>.conf com linhas "nome=valor"
+  # (ex: weekjp=false, soundbar=false). Veja as props com:
+  #   linux-wallpaperengine --list-properties <id>
+  local props=() key line pf
+  key="$(basename "$id")"
+  pf="$STATE_DIR/props/$key.conf"
+  if [ -f "$pf" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      case "$line" in \#*) continue ;; esac
+      props+=(--set-property "$line")
+    done < "$pf"
+  fi
   # --silent: wallpaper nao estoura audio proprio (visualizers ainda reagem ao
   # som do sistema; isso so muta o audio que o wallpaper produz).
-  setsid -f linux-wallpaperengine --silent "${roots[@]}" "$id" >/dev/null 2>&1
+  setsid -f linux-wallpaperengine --silent "${props[@]}" "${roots[@]}" "$id" >/dev/null 2>&1
 }
 
 # Imprime uma linha TSV por wallpaper instalado (workshop + defaults da WE):

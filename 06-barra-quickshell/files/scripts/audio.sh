@@ -97,20 +97,29 @@ case "${1:-get}" in
     fi
     ;;
   apps)
+    # 1 linha por APP (junta streams do mesmo app): "ids(virgula)|mute|vol|nome".
+    # mute=1 so se TODOS os streams do app estiverem mudos; vol = o maior dos streams.
     pactl list sink-inputs 2>/dev/null | awk '
-      /^Sink Input #/ { id=substr($3,2); mute=0; vol=0; app=""; med="" }
+      function flush() { if (id!="") { n=(app!=""?app:med); print id "|" mute "|" vol "|" n } }
+      /^Sink Input #/ { flush(); id=substr($3,2); mute=0; vol=0; app=""; med="" }
       /^[[:space:]]*Mute:/ { mute=($2=="yes")?1:0 }
       /^[[:space:]]*Volume:/ && vol==0 { if (match($0,/[0-9]+%/)) vol=substr($0,RSTART,RLENGTH-1) }
       /application.name = / { a=$0; sub(/.*application.name = "/,"",a); sub(/".*/,"",a); app=a }
       /media.name = / { m=$0; sub(/.*media.name = "/,"",m); sub(/".*/,"",m); med=m }
-      /^$/ { if (id!="") { n=(app!=""?app:med); print id "|" mute "|" vol "|" n; id="" } }
-      END { if (id!="") { n=(app!=""?app:med); print id "|" mute "|" vol "|" n } }'
+      END { flush() }' \
+    | awk -F'|' '
+      { name=$4
+        if (!(name in seen)) { seen[name]=1; order[++n]=name; ids[name]=$1; mut[name]=$2; vmax[name]=$3 }
+        else { ids[name]=ids[name] "," $1; if ($2=="0") mut[name]="0"; if ($3+0>vmax[name]+0) vmax[name]=$3 } }
+      END { for (i=1;i<=n;i++){ nm=order[i]; print ids[nm] "|" mut[nm] "|" vmax[nm] "|" nm } }'
     ;;
   app-vol)
-    pactl set-sink-input-volume "${2}" "${3:-0}%" 2>/dev/null
+    # aceita lista de ids separada por virgula (todos os streams do app)
+    p="${3:-0}"
+    IFS=','; for sid in ${2:-}; do pactl set-sink-input-volume "$sid" "${p}%" 2>/dev/null; done
     ;;
   app-mute)
-    pactl set-sink-input-mute "${2}" toggle 2>/dev/null
+    IFS=','; for sid in ${2:-}; do pactl set-sink-input-mute "$sid" toggle 2>/dev/null; done
     ;;
 
   # ---- microfone (sources de entrada), mesmo modelo do output ----

@@ -1,0 +1,29 @@
+#!/bin/bash
+# Modo noturno (luz quente) confiavel, com estado em arquivo.
+#
+# Por que: `hyprctl hyprsunset temperature` NAO e confiavel pra saber on/off. No modo
+# `identity` (tela normal, padrao do hyprsunset.conf) ele continua reportando a ultima
+# temperatura setada (ex 4000), entao a barra achava "noturno ligado" com a tela normal
+# (inversao). O omarchy-toggle-nightlight sofre do mesmo problema. Aqui o estado real
+# fica em ~/.local/state/nightlight e nao depende da query bugada.
+#
+#   nightlight-toggle get      -> "on" | "off"
+#   nightlight-toggle on|off|toggle
+set -uo pipefail
+
+STATE="$HOME/.local/state/nightlight"
+ON_TEMP=4000
+mkdir -p "$(dirname "$STATE")"
+
+ensure() { pgrep -x hyprsunset >/dev/null 2>&1 || { setsid uwsm-app -- hyprsunset >/dev/null 2>&1 & sleep 1; }; }
+state()  { cat "$STATE" 2>/dev/null || echo off; }
+on()  { ensure; hyprctl hyprsunset temperature "$ON_TEMP" >/dev/null 2>&1; echo on  > "$STATE"; }
+off() { ensure; hyprctl hyprsunset identity              >/dev/null 2>&1; echo off > "$STATE"; }
+
+case "${1:-toggle}" in
+  get)    state ;;
+  on)     on ;;
+  off)    off ;;
+  toggle) [ "$(state)" = on ] && off || on ;;
+  *) echo "uso: nightlight-toggle {get|on|off|toggle}" >&2; exit 1 ;;
+esac
