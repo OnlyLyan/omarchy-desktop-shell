@@ -582,6 +582,92 @@ ShellRoot {
                     }
                 }
 
+            // ---- "batimentos" do PC: o coracao bate mais rapido sob estresse ----
+            // estresse 0..1 = pior entre CPU (peso cheio), RAM (>50%) e temp da GPU (>45C).
+            // bpm 60 (tranquilo) -> 160 (correndo); cor verde -> ambar -> vermelho.
+            Row {
+                id: heartBeat
+                anchors.left: parent.left
+                anchors.leftMargin: 40
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 5
+                property real stress: Math.max(0, Math.min(1, Math.max(
+                    sys.cpu / 100,
+                    Math.max(0, (sys.mem - 50) / 50),
+                    Math.max(0, (gpu.temp - 45) / 45))))
+                property int bpm: Math.round(60 + heartBeat.stress * 100)
+
+                // cor do batimento conforme o estresse (verde -> ambar -> vermelho)
+                property string beatColor: heartBeat.stress > 0.75 ? "#f7768e"
+                                           : (heartBeat.stress > 0.45 ? "#e0af68" : "#9ece6a")
+
+                Text {
+                    id: heart
+                    anchors.verticalCenter: parent.verticalCenter
+                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                    text: "󰋑"
+                    color: heartBeat.beatColor
+                    transformOrigin: Item.Center
+                }
+
+                // ---- gráfico ECG: linha que rola com o pico no ritmo do bpm ----
+                Canvas {
+                    id: ecg
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 64; height: 20
+                    property var buf: []
+                    property int cols: 42
+                    property real phase: 0           // ms acumulados desde a ultima batida
+                    property int interval: 30        // ms por amostra (= intervalo do timer)
+                    property int spikeIdx: -1        // posicao atual dentro do pico (QRS)
+                    // formato do pico cardiaco (R grande, q/s pequenos), em amostras
+                    readonly property var shape: [0.0, -0.12, 0.06, 1.0, -0.5, 0.12, 0.0, 0.0]
+
+                    Component.onCompleted: { var a = []; for (var i = 0; i < cols; i++) a.push(0); buf = a; }
+
+                    function step() {
+                        phase += interval;
+                        var period = 60000 / heartBeat.bpm;
+                        if (phase >= period) { phase -= period; spikeIdx = 0; beatAnim.restart(); }
+                        var v = 0;
+                        if (spikeIdx >= 0 && spikeIdx < shape.length) { v = shape[spikeIdx]; spikeIdx++; }
+                        else spikeIdx = -1;
+                        buf.push(v); if (buf.length > cols) buf.shift();
+                        requestPaint();
+                    }
+                    Timer { interval: ecg.interval; running: true; repeat: true; onTriggered: ecg.step() }
+
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.clearRect(0, 0, width, height);
+                        ctx.strokeStyle = heartBeat.beatColor;
+                        ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.lineCap = "round";
+                        ctx.beginPath();
+                        var n = buf.length, dx = width / (cols - 1), mid = height * 0.62, amp = height * 0.52;
+                        for (var i = 0; i < n; i++) {
+                            var x = i * dx, y = mid - buf[i] * amp;
+                            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+                    }
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#6b7089"; font.pixelSize: 10
+                    text: heartBeat.bpm + " bpm"
+                }
+
+                // pulso do coracao (lub-dub), disparado junto com o pico do ECG
+                SequentialAnimation {
+                    id: beatAnim
+                    NumberAnimation { target: heart; property: "scale"; to: 1.35; duration: 70; easing.type: Easing.OutQuad }
+                    NumberAnimation { target: heart; property: "scale"; to: 1.12; duration: 60 }
+                    NumberAnimation { target: heart; property: "scale"; to: 1.28; duration: 60; easing.type: Easing.OutQuad }
+                    NumberAnimation { target: heart; property: "scale"; to: 1.0;  duration: 110; easing.type: Easing.InQuad }
+                }
+            }
+
             // ---- taskbar agrupada (CENTRO da tela) ----
             RowLayout {
                 anchors.horizontalCenter: parent.horizontalCenter

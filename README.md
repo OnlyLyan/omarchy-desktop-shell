@@ -16,6 +16,7 @@ arquivos reais) e `install.sh` idempotente.
 | `06-barra-quickshell` | Barra propria em Quickshell que substitui a waybar (taskbar agrupada, central de acoes) |
 | `07-alttab-quickshell` | Alt+Tab estilo Windows com thumbnail ao vivo (overlay no mesmo processo da barra) |
 | `08-bonus-opcional` | Extras OPCIONAIS (wallpaper-engine, tts-read) que a barra chama em dois botoes; instalador interativo, nao obrigatorio |
+| `09-pc-heartbeat` | Os "batimentos" do PC: coracao + grafico de ECG + bpm que aceleram e ficam vermelhos sob estresse (CPU/RAM/temp). Componente reutilizavel + demo standalone; ja integrado na barra (06) |
 
 ## Dependencias
 
