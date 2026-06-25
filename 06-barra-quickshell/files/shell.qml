@@ -1,5 +1,5 @@
 //@ pragma UseQApplication
-// Barra em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
+// Barra do Lucas em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
 // Iteracao 1: menu Omarchy + taskbar agrupada + relogio. Modulos de status virao depois.
 import Quickshell
 import Quickshell.Wayland
@@ -9,12 +9,12 @@ import Quickshell.Services.SystemTray
 import Quickshell.Services.Pipewire
 import Quickshell.Services.UPower
 import Quickshell.Bluetooth
+import Quickshell.Services.Mpris
 import QtQuick
 import QtQuick.Layouts
 
 ShellRoot {
     id: root
-    readonly property string scripts: Quickshell.env("HOME") + "/.config/quickshell/scripts"
     // estado global: central de acoes (dropdown estilo Windows) aberta?
     property bool acOpen: false
     property var acScreen: null   // monitor onde a central abre (o do chevron clicado)
@@ -76,7 +76,7 @@ ShellRoot {
     property var wifiNets: []
     Process {
         id: wifiListProc
-        command: [root.scripts + "/wifi-list.sh"]
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/wifi-list.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -93,7 +93,38 @@ ShellRoot {
     }
     function refreshWifi() { wifiListProc.running = true; }
     function connectWifi(name) {
-        Quickshell.execDetached([root.scripts + "/wifi-connect.sh", name]);
+        Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/wifi-connect.sh", name]);
+    }
+
+    // ---- wallpapers baixados (Wallpaper Engine): lista dinamica via controlador ----
+    property var wallpapers: []
+    Process {
+        id: wallListProc
+        command: [Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "list"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var lines = this.text.trim().split("\n");
+                var arr = [];
+                for (var i = 0; i < lines.length; i++) {
+                    if (!lines[i]) continue;
+                    // TSV: token \t kind(ok|web|app) \t audio(0/1) \t title \t preview
+                    var p = lines[i].split("\t");
+                    arr.push({ wid: p[0], kind: p[1] || "ok", audio: p[2] === "1",
+                               name: p[3] || p[0], preview: p[4] || "" });
+                }
+                root.wallpapers = arr;
+            }
+        }
+    }
+    function refreshWall() { wallListProc.running = true; }
+    function applyWall(id) { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "on", id]); }
+    function browseWall() { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "browse"]); }
+    function offWall() { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "off"]); }
+    function wallWarn(kind) {
+        var msg = kind === "web"
+            ? "Wallpaper tipo web nao roda nesta build (linux-wallpaperengine): costuma crashar."
+            : "Wallpaper tipo aplicativo (.exe) nao roda no Linux.";
+        Quickshell.execDetached(["notify-send", "-a", "Wallpaper", "Incompativel", msg]);
     }
 
     // ---- clima (omarchy-weather): poll raro, curl a wttr.in ----
@@ -107,7 +138,7 @@ ShellRoot {
     }
     Process {
         id: weatherProc
-        command: [root.scripts + "/weather.sh"]
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/weather.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var p = this.text.trim().split("\t");
@@ -155,7 +186,10 @@ ShellRoot {
         id: voxProc
         command: ["sh", "-c",
             "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; exec omarchy-voxtype-status"]
-        running: true
+        // DESATIVADO 2026-06-24: ditado por voz (voxtype) desligado a pedido do usuario.
+        // Com running:false o watcher nao sobe e o indicador "Voxtype pronto" some (vox.present
+        // fica false). Pra reativar: voltar running:true E `systemctl --user enable --now voxtype`.
+        running: false
         stdout: SplitParser {
             onRead: function (line) {
                 try {
@@ -167,6 +201,211 @@ ShellRoot {
             }
         }
     }
+
+    // ============ toggles rapidos (bass boost / caffeine / nightlight / mic) ============
+    QtObject {
+        id: tg
+        property bool caffeine: false   // inibindo idle (hypridle NAO rodando)
+        property bool night: false      // nightlight ligado (temperatura != 6000)
+        property bool micMuted: false
+    }
+    Process {
+        id: tgProc
+        command: ["sh", "-c",
+            "pgrep -x hypridle >/dev/null && caf=0 || caf=1; " +
+            "t=$(hyprctl hyprsunset temperature 2>/dev/null | grep -oE '[0-9]+'); " +
+            "if [ -n \"$t\" ] && [ \"$t\" != 6000 ]; then night=1; else night=0; fi; " +
+            "wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | grep -q MUTED && mic=1 || mic=0; " +
+            "echo \"$caf $night $mic\""]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var p = this.text.trim().split(" ");
+                tg.caffeine = p[0] === "1"; tg.night = p[1] === "1"; tg.micMuted = p[2] === "1";
+            }
+        }
+    }
+    // (bass boost agora e o modelo novo: root.bassOn / toggleBassNew, via audio.sh.
+    //  O antigo 'easyeffects -b 3' foi removido: ele LIGAVA o EE e alternava o bypass
+    //  como efeito colateral de so consultar o estado, quebrando o roteamento de audio.)
+    Timer { interval: 10000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: tgProc.running = true }
+    function tgRefresh() { tgProc.running = true; }
+    // reconciliam o estado real um pouco depois (o clique ja virou na hora, otimista)
+    Timer { id: tgDelay; interval: 800; repeat: false; onTriggered: tgProc.running = true }
+    function toggleCaffeine() { tg.caffeine = !tg.caffeine; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-idle"]); tgDelay.restart(); }
+    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-nightlight"]); tgDelay.restart(); }
+    function toggleMic() { tg.micMuted = !tg.micMuted; Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]); tgDelay.restart(); }
+
+    // ============ volume do dispositivo de SAIDA REAL ============
+    // o easyeffects_sink (default) ignora o proprio volume; controlamos o device
+    // real (fone BT / alto-falante) via scripts/audio.sh
+    QtObject { id: vols; property real vol: 0; property bool mut: false }
+    property bool volDragging: false
+    property real pendingVol: -1
+    Process {
+        id: volProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "get"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (root.volDragging) return;   // nao sobrescreve o valor enquanto arrasta
+                var p = this.text.trim().split(" ");
+                vols.vol = (parseInt(p[0]) || 0) / 100;
+                vols.mut = p[1] === "1";
+            }
+        }
+    }
+    function refreshVol() { volProc.running = true; }
+    // poll so enquanto a central esta aberta
+    Timer { interval: 2000; running: root.acOpen; repeat: true; triggeredOnStart: true
+            onTriggered: { volProc.running = true; bassGetProc.running = true; } }
+    // throttle: aplica no maximo a cada 90ms o ultimo valor arrastado (1 processo, nao 1 por pixel)
+    Timer {
+        id: volApply; interval: 90; repeat: false
+        onTriggered: {
+            if (root.pendingVol >= 0) {
+                Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh",
+                    "set", "" + Math.round(root.pendingVol * 100)]);
+                root.pendingVol = -1;
+            }
+        }
+    }
+    function setVolReal(f) {
+        var ff = Math.max(0, Math.min(1, f));
+        vols.vol = ff;            // feedback visual instantaneo
+        root.pendingVol = ff;
+        if (!volApply.running) volApply.start();
+    }
+    function toggleVolMute() {
+        vols.mut = !vols.mut;     // otimista
+        Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "toggle"]);
+    }
+
+    // ---- painel de audio estilo Windows: dispositivos de saida + volume por app + bass ----
+    property var audioSinks: []
+    property var audioApps: []
+    property bool bassOn: false
+    Process {
+        id: sinksProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "sinks"]
+        stdout: StdioCollector { onStreamFinished: {
+            var lines = this.text.trim().split("\n"); var arr = [];
+            for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
+                var p = lines[i].split("|");
+                arr.push({ name: p[0], active: p[1] === "1", icon: p[2] || "speaker",
+                           desc: p.slice(3).join("|") || p[0] }); }
+            root.audioSinks = arr;
+        } }
+    }
+    Process {
+        id: appsProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "apps"]
+        stdout: StdioCollector { onStreamFinished: {
+            var lines = this.text.trim().split("\n"); var arr = [];
+            for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
+                var p = lines[i].split("|");
+                arr.push({ id: p[0], mut: p[1] === "1", vol: (parseInt(p[2]) || 0) / 100,
+                           name: p.slice(3).join("|") || ("app " + p[0]) }); }
+            root.audioApps = arr;
+        } }
+    }
+    Process {
+        id: bassGetProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "bass-get"]
+        stdout: StdioCollector { onStreamFinished: root.bassOn = (this.text.trim() === "1") }
+    }
+
+    // ---- microfone (entrada): mesmo modelo do output ----
+    QtObject { id: mics; property real vol: 0; property bool mut: false }
+    property bool micDragging: false
+    property real micPending: -1
+    property var micSources: []
+    Process {
+        id: micGetProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-get"]
+        stdout: StdioCollector { onStreamFinished: {
+            if (root.micDragging) return;
+            var p = this.text.trim().split(" "); mics.vol = (parseInt(p[0]) || 0) / 100; mics.mut = p[1] === "1";
+        } }
+    }
+    Process {
+        id: micSrcProc
+        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "sources"]
+        stdout: StdioCollector { onStreamFinished: {
+            var lines = this.text.trim().split("\n"); var arr = [];
+            for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
+                var p = lines[i].split("|");
+                arr.push({ name: p[0], active: p[1] === "1", icon: p[2] || "mic", desc: p.slice(3).join("|") || p[0] }); }
+            root.micSources = arr;
+        } }
+    }
+    Timer { id: micApply; interval: 90; repeat: false; onTriggered: {
+        if (root.micPending >= 0) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
+    function refreshMic() { micGetProc.running = true; micSrcProc.running = true; }
+    function setMicVol(f) { var ff = Math.max(0, Math.min(1, f)); mics.vol = ff; root.micPending = ff; if (!micApply.running) micApply.start(); }
+    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
+    function setInput(name) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "input", name]);
+                              for (var i = 0; i < micSources.length; i++) micSources[i].active = (micSources[i].name === name);
+                              micSources = micSources.slice(); audioRefresh.restart(); }
+
+    function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; root.refreshVol(); root.refreshMic(); }
+    function setOutput(name) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "output", name]);
+                               for (var i = 0; i < audioSinks.length; i++) audioSinks[i].active = (audioSinks[i].name === name);
+                               audioSinks = audioSinks.slice(); audioRefresh.restart(); }
+    function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
+                                Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
+    function toggleAppMute(id) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
+    function toggleBassNew() { root.bassOn = !root.bassOn;
+                               Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
+    Timer { id: audioRefresh; interval: 600; repeat: false; onTriggered: root.refreshAudio() }
+
+    // ============ GPU (NVIDIA): temperatura + uso, por polling ============
+    QtObject { id: gpu; property int temp: 0; property int util: 0; property bool ok: false }
+    Process {
+        id: gpuProc
+        command: ["sh", "-c",
+            "nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var t = this.text.trim();
+                if (!t) { gpu.ok = false; return; }
+                var p = t.split(",");
+                gpu.temp = parseInt(p[0]) || 0; gpu.util = parseInt(p[1]) || 0; gpu.ok = true;
+            }
+        }
+    }
+    Timer { interval: 10000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: gpuProc.running = true }
+
+    // ============ notificacoes (historico do mako) ============
+    property var notifs: []
+    Process {
+        id: notifProc
+        command: ["makoctl", "history", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var arr = JSON.parse(this.text);
+                    if (arr && arr.data) arr = arr.data[0] || [];   // tolera formato aninhado
+                    root.notifs = arr || [];
+                } catch (e) { root.notifs = []; }
+            }
+        }
+        Component.onCompleted: running = true
+    }
+    function refreshNotifs() { notifProc.running = true; }
+
+    // ============ player de midia (MPRIS) ============
+    // escolhe o player tocando; senao o primeiro disponivel
+    property var player: {
+        var ps = (Mpris.players && Mpris.players.values) ? Mpris.players.values : [];
+        var any = null;
+        for (var i = 0; i < ps.length; i++) {
+            if (!any) any = ps[i];
+            if (ps[i].playbackState === MprisPlaybackState.Playing) return ps[i];
+        }
+        return any;
+    }
+    property bool hasPlayer: !!player
 
     // ============ Alt+Tab estilo Windows (thumbnails ao vivo) ============
     property bool attOpen: false
@@ -205,6 +444,17 @@ ShellRoot {
         if (attList.length === 0) return;
         attIndex = (attIndex + dir + attList.length) % attList.length;
     }
+    // miniatura de tamanho FIXO (faixa horizontal normal). So calcula quantas
+    // cabem na largura da tela; o resto desce pra uma nova fileira embaixo.
+    function attLayout(n, availW, availH) {
+        var tw = 240, th = 176, gap = 14, pad = 20;
+        if (n < 1) return { cols: 1, rows: 1, tw: tw, th: th, gap: gap, pad: pad };
+        var innerW = Math.max(1, availW - 2 * pad);
+        var cols = Math.max(1, Math.floor((innerW + gap) / (tw + gap)));
+        cols = Math.min(cols, n);
+        var rows = Math.ceil(n / cols);
+        return { cols: cols, rows: rows, tw: tw, th: th, gap: gap, pad: pad };
+    }
     function attConfirm() {
         var tl = (attOpen && attList[attIndex]) ? attList[attIndex] : null;
         attOpen = false;   // fecha e solta o teclado ANTES de focar
@@ -213,7 +463,7 @@ ShellRoot {
         // pro workspace/monitor de origem. activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
-                root.scripts + "/taskbar-activate.sh",
+                Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
                 tl.appId, tl.title || "", "max"]);
         else
             tl.activate();
@@ -245,6 +495,17 @@ ShellRoot {
         }
         function confirm(): void { root.attConfirm(); }
         function cancel(): void { root.attOpen = false; }
+    }
+
+    // abre/fecha a central de acoes (e opcionalmente ja numa view, ex: wall)
+    IpcHandler {
+        target: "ac"
+        function open(view: string): void {
+            root.acScreen = Quickshell.screens[0];
+            if (view) card.view = view;
+            root.acOpen = true;
+        }
+        function close(): void { root.acOpen = false; }
     }
 
     // uma barra por monitor
@@ -370,7 +631,7 @@ ShellRoot {
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
                                     // cru, que trazia o overlay especial e travava.
                                     Quickshell.execDetached([
-                                        root.scripts + "/taskbar-activate.sh",
+                                        Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
                                         appBtn.modelData.appId]);
                                 }
                             }
@@ -428,7 +689,7 @@ ShellRoot {
                                                         if (!win) return;
                                                         // foca/restaura a janela ESPECIFICA (por titulo) via script
                                                         Quickshell.execDetached([
-                                                            root.scripts + "/taskbar-activate.sh",
+                                                            Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
                                                             appBtn.modelData.appId, win.title || ""]);
                                                     }
                                                 }
@@ -447,6 +708,23 @@ ShellRoot {
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 12
+
+                // ---- player de midia: so um icone play/pause (titulo fica na central) ----
+                // clique esquerdo = play/pause; clique direito = abre a central com o player
+                Text {
+                    visible: root.hasPlayer
+                    Layout.alignment: Qt.AlignVCenter
+                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#7aa2f7"
+                    text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: function (e) {
+                            if (e.button === Qt.RightButton) { root.acScreen = bar.screen; root.acOpen = true; }
+                            else if (root.player) root.player.togglePlaying();
+                        }
+                    }
+                }
 
                 // ---- system tray ----
                 RowLayout {
@@ -518,6 +796,21 @@ ShellRoot {
                     }
                 }
 
+                // ---- gpu: temperatura (vermelho quando quente) ----
+                Text {
+                    visible: gpu.ok
+                    Layout.alignment: Qt.AlignVCenter
+                    color: gpu.temp >= 80 ? "#f7768e" : "#a9b1d6"
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 13
+                    text: "󰢮 " + gpu.temp + "°"
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Quickshell.execDetached(["sh", "-c", "kitty -e sh -c 'watch -n1 nvidia-smi'"])
+                    }
+                }
+
                 // ---- bateria: indicador grafico que enche conforme a carga ----
                 // (sem numero; cheio = 100%, vermelho quando baixa, verde carregando)
                 Item {
@@ -561,6 +854,40 @@ ShellRoot {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 2.5; height: 6; radius: 1
                         color: "#a9b1d6"
+                    }
+                }
+
+                // ---- mic mutado: so aparece quando o microfone esta mudo ----
+                Text {
+                    visible: tg.micMuted
+                    Layout.alignment: Qt.AlignVCenter
+                    color: "#f7768e"
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 14
+                    text: "󰍭"
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleMic()
+                    }
+                }
+
+                // ---- notificacoes: sino abre a central na view de notificacoes ----
+                Item {
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitWidth: 18; implicitHeight: 18
+                    Text {
+                        anchors.centerIn: parent
+                        color: "#a9b1d6"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                        text: "󰂚"
+                    }
+                    Rectangle {
+                        visible: root.notifs.length > 0
+                        anchors.right: parent.right; anchors.top: parent.top
+                        width: 6; height: 6; radius: 3; color: "#f7768e"
+                    }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.acScreen = bar.screen; card.view = "notif"; root.refreshNotifs(); root.acOpen = true; }
                     }
                 }
 
@@ -611,8 +938,11 @@ ShellRoot {
 
         Rectangle {
             id: card
-            property string view: "main"   // "main" | "wifi" | "bt"
-            onViewChanged: if (view === "wifi") root.refreshWifi()
+            property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "wall" | "audio"
+            onViewChanged: { if (view === "wifi") root.refreshWifi();
+                             else if (view === "notif") root.refreshNotifs();
+                             else if (view === "wall") root.refreshWall();
+                             else if (view === "audio") root.refreshAudio(); }
             // animacao de abrir/fechar: fade + leve slide de baixo pra cima
             opacity: root.acOpen ? 1 : 0
             property real slide: root.acOpen ? 0 : 14
@@ -621,7 +951,10 @@ ShellRoot {
             Behavior on slide { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             width: 340
             implicitHeight: (view === "wifi" ? wifiCol.implicitHeight
-                             : (view === "bt" ? btCol.implicitHeight : acCol.implicitHeight)) + 28
+                             : (view === "bt" ? btCol.implicitHeight
+                             : (view === "notif" ? notifCol.implicitHeight
+                             : (view === "wall" ? wallCol.implicitHeight
+                             : (view === "audio" ? audioCol.implicitHeight : acCol.implicitHeight))))) + 28
             height: implicitHeight
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -655,36 +988,158 @@ ShellRoot {
                     color: "#a9b1d6"; font.pixelSize: 14; font.bold: true
                 }
 
+                // player de midia (MPRIS): capa + faixa + controles
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: root.hasPlayer
+                    implicitHeight: 64; radius: 12
+                    color: "#1f2235"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10
+                        anchors.topMargin: 8; anchors.bottomMargin: 8
+                        spacing: 10
+                        // capa (ou glyph quando nao ha arte)
+                        Item {
+                            Layout.preferredWidth: 48; Layout.preferredHeight: 48
+                            Image {
+                                id: artImg
+                                anchors.fill: parent
+                                fillMode: Image.PreserveAspectCrop
+                                source: (root.player && root.player.trackArtUrl) ? root.player.trackArtUrl : ""
+                                visible: status === Image.Ready
+                            }
+                            Text {
+                                anchors.centerIn: parent
+                                visible: artImg.status !== Image.Ready
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 26; color: "#7aa2f7"
+                                text: "󰝚"
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 1
+                            Text {
+                                Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12; font.bold: true
+                                elide: Text.ElideRight
+                                text: root.player ? (root.player.trackTitle || "—") : "—"
+                            }
+                            Text {
+                                Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 11
+                                elide: Text.ElideRight
+                                text: root.player ? (root.player.trackArtist || "") : ""
+                            }
+                        }
+                        Text {
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"; text: "󰒮"
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: if (root.player) root.player.previous() }
+                        }
+                        Text {
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 22; color: "#7aa2f7"
+                            text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: if (root.player) root.player.togglePlaying() }
+                        }
+                        Text {
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"; text: "󰒭"
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: if (root.player) root.player.next() }
+                        }
+                    }
+                }
+
                 // volume: glyph + slider + %
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
                     Text {
-                        text: card.mut ? "󰝟" : "󰕾"
+                        text: vols.mut ? "󰝟" : "󰕾"
                         font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
                         color: "#a9b1d6"
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: { if (card.sink && card.sink.audio) card.sink.audio.muted = !card.sink.audio.muted; }
+                            onClicked: root.toggleVolMute()
                         }
                     }
-                    Rectangle {
+                    // area de arraste alta (20px); controla o device de saida real (vol.sh)
+                    Item {
                         Layout.fillWidth: true
-                        height: 6; radius: 3; color: "#2a2e44"
+                        implicitHeight: 20
                         Rectangle {
-                            width: parent.width * (card.mut ? 0 : card.vol)
-                            height: parent.height; radius: 3; color: "#7aa2f7"
+                            anchors.left: parent.left; anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 6; radius: 3; color: "#2a2e44"
+                            Rectangle {
+                                width: parent.width * (vols.mut ? 0 : vols.vol)
+                                height: parent.height; radius: 3; color: "#7aa2f7"
+                            }
                         }
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onPressed: function (e) { card.setVol(e.x / width); }
-                            onPositionChanged: function (e) { if (pressed) card.setVol(e.x / width); }
+                            onPressed: function (e) { root.volDragging = true; root.setVolReal(e.x / width); }
+                            onPositionChanged: function (e) { if (pressed) root.setVolReal(e.x / width); }
+                            onReleased: { root.volDragging = false; root.refreshVol(); }
                         }
                     }
                     Text {
-                        Layout.preferredWidth: 36
-                        text: Math.round(card.vol * 100) + "%"
+                        Layout.preferredWidth: 32
+                        text: Math.round(vols.vol * 100) + "%"
                         color: "#a9b1d6"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight
+                    }
+                    // abre o painel de audio (dispositivos de saida + volume por app)
+                    Text {
+                        text: "󰓃"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16
+                        color: audOpenMa.containsMouse ? "#7aa2f7" : "#a9b1d6"
+                        MouseArea { id: audOpenMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: { root.refreshAudio(); card.view = "audio" } }
+                    }
+                }
+
+                // toggles rapidos: bass boost, caffeine, nightlight, mic
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Repeater {
+                        model: [
+                            { key: "bass",  icon: "󰋃", label: "Bass" },
+                            { key: "caf",   icon: "󰅶", label: "Caffeine" },
+                            { key: "night", icon: "󰖔", label: "Noturno" },
+                            { key: "mic",   icon: "󰍬", label: "Mic" }
+                        ]
+                        delegate: Rectangle {
+                            required property var modelData
+                            property bool on: modelData.key === "bass" ? root.bassOn
+                                            : (modelData.key === "caf" ? tg.caffeine
+                                            : (modelData.key === "night" ? tg.night
+                                            : !tg.micMuted))
+                            Layout.fillWidth: true
+                            implicitHeight: 52; radius: 12
+                            color: on ? "#33557aa2" : "#1f2235"
+                            border.color: on ? "#557aa2" : "transparent"; border.width: 1
+                            ColumnLayout {
+                                anchors.centerIn: parent; spacing: 2
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 17
+                                    color: on ? "#7aa2f7" : "#6b7089"
+                                    text: (modelData.key === "mic" && tg.micMuted) ? "󰍭" : modelData.icon
+                                }
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    color: "#a9b1d6"; font.pixelSize: 10
+                                    text: modelData.label
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (modelData.key === "bass") root.toggleBassNew();
+                                    else if (modelData.key === "caf") root.toggleCaffeine();
+                                    else if (modelData.key === "night") root.toggleNight();
+                                    else root.toggleMic();
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -822,6 +1277,24 @@ ShellRoot {
                                 "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; exec kitty -e omarchy-voxtype-config"]);
                             root.acOpen = false;
                         }
+                    }
+                }
+
+                // papel de parede (Wallpaper Engine): abre a lista de cenas
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 30; radius: 8
+                    color: wallMa.containsMouse ? "#33557aa2" : "transparent"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 2; anchors.rightMargin: 6; spacing: 8
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#7aa2f7"; text: "󰸉" }
+                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Papel de parede" }
+                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12; color: "#6b7089" }
+                    }
+                    MouseArea {
+                        id: wallMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.refreshWall(); card.view = "wall" }
                     }
                 }
 
@@ -1057,6 +1530,441 @@ ShellRoot {
                     text: "Nenhum dispositivo pareado"
                 }
             }
+
+            // ---- view: notificacoes (historico do mako) ----
+            ColumnLayout {
+                id: notifCol
+                visible: card.view === "notif"
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                anchors.margins: 14
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: card.view = "main" }
+                    }
+                    Text { text: "Notificacoes"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Item { Layout.fillWidth: true }
+                    // ler a notificacao mais recente (a do topo) em voz, via TTS
+                    Text {
+                        text: "󰔊"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                        color: root.notifs.length > 0 ? "#a9b1d6" : "#3b3f54"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (root.notifs.length === 0) return;
+                                        var n = root.notifs[0];
+                                        var txt = ((n["summary"] || "") + ". " + (n["body"] || "")).trim();
+                                        Quickshell.execDetached(["sh", "-c", "exec \"$HOME/.local/bin/tts-read\" \"$1\"", "_", txt]);
+                                    } }
+                    }
+                    // limpar de verdade: dispensa as ativas e DRENA o historico do mako
+                    // (restore traz de volta, dismiss --no-history remove sem regravar)
+                    Text {
+                        text: "󰎟"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                        color: root.notifs.length > 0 ? "#a9b1d6" : "#3b3f54"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        Quickshell.execDetached(["sh", "-c",
+                                            "makoctl dismiss --all 2>/dev/null; i=0; " +
+                                            "while [ $i -lt 40 ] && makoctl restore 2>/dev/null; do " +
+                                            "makoctl dismiss --no-history 2>/dev/null; i=$((i+1)); done"]);
+                                        root.notifs = [];
+                                    } }
+                    }
+                    Text {
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#a9b1d6"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.refreshNotifs() }
+                    }
+                }
+
+                Repeater {
+                    model: root.notifs
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: ntCol.implicitHeight + 12
+                        radius: 8; color: "#1f2235"
+                        ColumnLayout {
+                            id: ntCol
+                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 1
+                            Text {
+                                Layout.fillWidth: true; color: "#7aa2f7"; font.pixelSize: 10
+                                elide: Text.ElideRight
+                                text: (modelData["app_name"] || "")
+                            }
+                            Text {
+                                Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                                elide: Text.ElideRight
+                                text: (modelData["summary"] || "")
+                            }
+                            Text {
+                                Layout.fillWidth: true; visible: !!(modelData["body"])
+                                color: "#a9b1d6"; font.pixelSize: 11
+                                wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                                text: (modelData["body"] || "")
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    visible: root.notifs.length === 0
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    color: "#6b7089"; font.pixelSize: 11
+                    text: "Sem notificacoes recentes"
+                }
+            }
+
+            // ---- view: papel de parede (Wallpaper Engine) ----
+            ColumnLayout {
+                id: wallCol
+                visible: card.view === "wall"
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                anchors.margins: 14
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: card.view = "main" }
+                    }
+                    Text { Layout.fillWidth: true; text: "Papel de parede"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    // recarrega a lista (apos baixar novos no Steam WE)
+                    Text {
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                        color: wallRefMa.containsMouse ? "#7aa2f7" : "#6b7089"
+                        MouseArea { id: wallRefMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: root.refreshWall() }
+                    }
+                }
+
+                // estado vazio: sem wallpapers baixados (ou tooling ausente)
+                Text {
+                    visible: root.wallpapers.length === 0
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: "#6b7089"; font.pixelSize: 11
+                    text: "Nenhum wallpaper. Requer linux-wallpaperengine (AUR) + Wallpaper Engine (Steam). Use \"Baixar mais\" pra abrir e baixar."
+                }
+
+                // legenda: âmbar = web (crasha), cinza = app (incompatível), alto-falante = tem som
+                Text {
+                    visible: root.wallpapers.length > 0
+                    Layout.fillWidth: true; color: "#6b7089"; font.pixelSize: 10
+                    text: "Compatíveis primeiro. Âmbar/cinza = incompatível. 󰕾 = tem som."
+                    font.family: "JetBrainsMono Nerd Font"
+                }
+
+                // previewer: grade de miniaturas (preview.jpg/gif de cada wallpaper)
+                Flickable {
+                    visible: root.wallpapers.length > 0
+                    Layout.fillWidth: true
+                    implicitHeight: Math.min(wallGrid.implicitHeight, 312)
+                    contentWidth: width
+                    contentHeight: wallGrid.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Grid {
+                        id: wallGrid
+                        width: parent.width
+                        columns: 3
+                        spacing: 8
+                        property real cellW: (width - (columns - 1) * spacing) / columns
+
+                        Repeater {
+                            model: root.wallpapers
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: wallGrid.cellW
+                                height: width * 0.62
+                                radius: 8
+                                clip: true
+                                color: "#15161e"
+                                border.width: (modelData.kind === "ok" && tnMa.containsMouse) ? 2 : 0
+                                border.color: "#7aa2f7"
+
+                                Image {
+                                    anchors.fill: parent
+                                    source: modelData.preview ? ("file://" + modelData.preview) : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true; cache: true
+                                    // wallpapers incompativeis ficam apagados
+                                    opacity: modelData.kind === "ok" ? 1 : 0.35
+                                }
+
+                                // faixa inferior com o titulo
+                                Rectangle {
+                                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                                    height: 18
+                                    color: "#cc15161e"
+                                    Text {
+                                        anchors { fill: parent; leftMargin: 5; rightMargin: 5 }
+                                        verticalAlignment: Text.AlignVCenter
+                                        color: "#c0caf5"; font.pixelSize: 9
+                                        elide: Text.ElideRight; text: modelData.name
+                                    }
+                                }
+
+                                // badge de incompativel (canto superior esquerdo)
+                                Rectangle {
+                                    visible: modelData.kind !== "ok"
+                                    anchors { left: parent.left; top: parent.top; margins: 4 }
+                                    radius: 4; height: 14
+                                    width: kindLbl.implicitWidth + 8
+                                    color: modelData.kind === "web" ? "#cce0af68" : "#cc6b7089"
+                                    Text {
+                                        id: kindLbl; anchors.centerIn: parent
+                                        color: "#15161e"; font.pixelSize: 8; font.bold: true
+                                        text: modelData.kind === "web" ? "web" : "app"
+                                    }
+                                }
+
+                                // icone de som (canto superior direito)
+                                Text {
+                                    visible: modelData.audio
+                                    anchors { right: parent.right; top: parent.top; margins: 4 }
+                                    text: "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11
+                                    color: "#e0af68"
+                                    style: Text.Outline; styleColor: "#15161e"
+                                }
+
+                                MouseArea {
+                                    id: tnMa
+                                    anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: modelData.kind === "ok" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onClicked: {
+                                        if (modelData.kind === "ok") { root.applyWall(modelData.wid); root.acOpen = false; }
+                                        else { root.wallWarn(modelData.kind); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+
+                // baixar mais: desliga o linux-wpe e abre o Wallpaper Engine do Steam
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 36; radius: 8
+                    color: wDlMa.containsMouse ? "#3340c057" : "transparent"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#9ece6a"; text: "󰇚" }
+                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Baixar mais (abrir Wallpaper Engine)" }
+                    }
+                    MouseArea {
+                        id: wDlMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.browseWall(); root.acOpen = false; }
+                    }
+                }
+
+                // desligar o wallpaper animado (libera a GPU)
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 36; radius: 8
+                    color: wOffMa.containsMouse ? "#33f7768e" : "transparent"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#f7768e"; text: "󰸉" }
+                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Desligar wallpaper animado" }
+                    }
+                    MouseArea {
+                        id: wOffMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.offWall(); root.acOpen = false; }
+                    }
+                }
+            }
+
+            // ---- view: som (dispositivos de saida + volume por app + bass) ----
+            ColumnLayout {
+                id: audioCol
+                visible: card.view === "audio"
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                anchors.margins: 14
+                spacing: 10
+
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Text {
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: card.view = "main" }
+                    }
+                    Text { Layout.fillWidth: true; text: "Som"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text {
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                        color: audRefMa.containsMouse ? "#7aa2f7" : "#6b7089"
+                        MouseArea { id: audRefMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: root.refreshAudio() }
+                    }
+                }
+
+                // volume master (sink padrao, mesmo das teclas de volume)
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 10
+                    Text { text: vols.mut ? "󰝟" : "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                           MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleVolMute() } }
+                    Item {
+                        Layout.fillWidth: true; implicitHeight: 20
+                        Rectangle {
+                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                            height: 6; radius: 3; color: "#2a2e44"
+                            Rectangle { width: parent.width * (vols.mut ? 0 : vols.vol); height: parent.height; radius: 3; color: "#7aa2f7" }
+                        }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onPressed: function (e) { root.volDragging = true; root.setVolReal(e.x / width); }
+                            onPositionChanged: function (e) { if (pressed) root.setVolReal(e.x / width); }
+                            onReleased: { root.volDragging = false; root.refreshVol(); }
+                        }
+                    }
+                    Text { Layout.preferredWidth: 32; text: Math.round(vols.vol * 100) + "%"; color: "#a9b1d6"
+                           font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
+                }
+
+                // saida: escolher o dispositivo (igual Windows)
+                Text { text: "Saída"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
+                Repeater {
+                    model: root.audioSinks
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 34; radius: 8
+                        color: modelData.active ? "#33557aa2" : (sinkMa.containsMouse ? "#1f557aa2" : "transparent")
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                            Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                                   color: modelData.active ? "#7aa2f7" : "#a9b1d6"
+                                   text: modelData.icon === "headphones" ? "󰋋" : (modelData.icon === "tv" ? "󰔂" : (modelData.icon === "usb" ? "󰕓" : "󰓃")) }
+                            Text { Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                                   elide: Text.ElideRight; text: modelData.desc }
+                            Text { visible: modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
+                                   font.pixelSize: 13; color: "#9ece6a" }
+                        }
+                        MouseArea {
+                            id: sinkMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.setOutput(modelData.name)
+                        }
+                    }
+                }
+
+                // aplicativos: volume por programa (igual mixer do Windows)
+                Text { visible: root.audioApps.length > 0; text: "Aplicativos"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
+                Text { visible: root.audioApps.length === 0; text: "Nenhum app tocando agora."; color: "#6b7089"; font.pixelSize: 11 }
+                Repeater {
+                    model: root.audioApps
+                    delegate: RowLayout {
+                        id: appRow
+                        required property var modelData
+                        property real av: modelData.vol
+                        Layout.fillWidth: true; spacing: 8
+                        Text { text: appRow.modelData.mut ? "󰝟" : "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                               color: "#a9b1d6"; Layout.preferredWidth: 18
+                               MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleAppMute(appRow.modelData.id) } }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 11; elide: Text.ElideRight; text: appRow.modelData.name }
+                            Item {
+                                Layout.fillWidth: true; implicitHeight: 14
+                                Rectangle {
+                                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                    height: 5; radius: 3; color: "#2a2e44"
+                                    Rectangle { width: parent.width * Math.min(1, appRow.av); height: parent.height; radius: 3; color: "#bb9af7" }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onPressed: function (e) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); }
+                                    onPositionChanged: function (e) { if (pressed) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); } }
+                                }
+                            }
+                        }
+                        Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: "#6b7089"
+                               font.pixelSize: 10; horizontalAlignment: Text.AlignRight }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+
+                // ---- microfone ----
+                Text { text: "Microfone"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 10
+                    Text { text: mics.mut ? "󰍭" : "󰍬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
+                           color: mics.mut ? "#f7768e" : "#a9b1d6"
+                           MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleMicMuteAudio() } }
+                    Item {
+                        Layout.fillWidth: true; implicitHeight: 20
+                        Rectangle {
+                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                            height: 6; radius: 3; color: "#2a2e44"
+                            Rectangle { width: parent.width * (mics.mut ? 0 : mics.vol); height: parent.height; radius: 3; color: "#9ece6a" }
+                        }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onPressed: function (e) { root.micDragging = true; root.setMicVol(e.x / width); }
+                            onPositionChanged: function (e) { if (pressed) root.setMicVol(e.x / width); }
+                            onReleased: { root.micDragging = false; root.refreshMic(); }
+                        }
+                    }
+                    Text { Layout.preferredWidth: 32; text: Math.round(mics.vol * 100) + "%"; color: "#a9b1d6"
+                           font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
+                }
+                // escolher o microfone de entrada
+                Repeater {
+                    model: root.micSources
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 34; radius: 8
+                        color: modelData.active ? "#3340c057" : (srcMa.containsMouse ? "#1f40c057" : "transparent")
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                            Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                                   color: modelData.active ? "#9ece6a" : "#a9b1d6"
+                                   text: modelData.icon === "btmic" ? "󰋎" : "󰍬" }
+                            Text { Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                                   elide: Text.ElideRight; text: modelData.desc }
+                            Text { visible: modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
+                                   font.pixelSize: 13; color: "#9ece6a" }
+                        }
+                        MouseArea { id: srcMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.setInput(modelData.name) }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+
+                // bass boost: liga o EasyEffects sob demanda, roteado pro dispositivo atual
+                Rectangle {
+                    Layout.fillWidth: true; implicitHeight: 36; radius: 8
+                    color: root.bassOn ? "#33bb9af7" : (bassMa2.containsMouse ? "#1fbb9af7" : "transparent")
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                               color: root.bassOn ? "#bb9af7" : "#a9b1d6"; text: "󰋃" }
+                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Bass boost (EasyEffects)" }
+                        Text { color: root.bassOn ? "#9ece6a" : "#6b7089"; font.pixelSize: 11; text: root.bassOn ? "ligado" : "desligado" }
+                    }
+                    MouseArea { id: bassMa2; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.toggleBassNew() }
+                }
+            }
         }
     }
 
@@ -1097,6 +2005,10 @@ ShellRoot {
                     root.attStep(-1); e.accepted = true;
                 } else if (e.key === Qt.Key_Right) {
                     root.attStep(1); e.accepted = true;
+                } else if (e.key === Qt.Key_Up) {
+                    root.attStep(-att.geom.cols); e.accepted = true;   // fileira de cima
+                } else if (e.key === Qt.Key_Down) {
+                    root.attStep(att.geom.cols); e.accepted = true;    // fileira de baixo
                 }
             }
             Keys.onReleased: function (e) {
@@ -1104,6 +2016,15 @@ ShellRoot {
                     root.attConfirm(); e.accepted = true;
                 }
             }
+        }
+
+        // grade responsiva: se ajusta a tela e quebra em fileiras quando enche a largura
+        property var geom: root.attLayout(root.attList.length, att.width * 0.94, att.height * 0.92)
+        // fatia a lista em fileiras de `cols` janelas (ultima fileira pode ter menos)
+        property var rowsData: {
+            var out = [], c = att.geom.cols, list = root.attList;
+            for (var i = 0; i < list.length; i += c) out.push(list.slice(i, i + c));
+            return out;
         }
 
         Rectangle {
@@ -1114,70 +2035,84 @@ ShellRoot {
             transformOrigin: Item.Center
             Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
             Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-            width: Math.min(att.width * 0.94, attRow.implicitWidth + 40)
-            height: attRow.implicitHeight + 36
+            width:  att.geom.cols * att.geom.tw + (att.geom.cols - 1) * att.geom.gap + 2 * att.geom.pad
+            height: att.geom.rows * att.geom.th + (att.geom.rows - 1) * att.geom.gap + 2 * att.geom.pad
             radius: 18
             color: "#ee16161e"
             border.color: "#33557aa2"; border.width: 1
             MouseArea { anchors.fill: parent }   // absorve cliques no card
+            // scroll do mouse cicla a selecao
+            WheelHandler { onWheel: function (e) { root.attStep(e.angleDelta.y < 0 ? 1 : -1); } }
 
-            RowLayout {
-                id: attRow
+            // fileiras empilhadas; cada fileira centralizada (a ultima, parcial, fica no meio)
+            Column {
+                id: attCol
                 anchors.centerIn: parent
-                spacing: 14
+                spacing: att.geom.gap
                 Repeater {
-                    model: root.attList
-                    delegate: Rectangle {
-                        id: thumb
-                        required property var modelData
-                        required property int index
-                        property bool sel: index === root.attIndex
-                        implicitWidth: 240
-                        implicitHeight: 176
-                        radius: 12
-                        color: sel ? "#332f6aa8" : "#1f2235"
-                        border.color: sel ? "#7aa2f7" : "#2a2e44"
-                        border.width: sel ? 3 : 1
-                        Behavior on border.color { ColorAnimation { duration: 90 } }
+                    model: att.rowsData
+                    delegate: Row {
+                        id: attRowDeleg
+                        required property var modelData   // array de janelas desta fileira
+                        required property int index       // indice da fileira
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: att.geom.gap
+                        Repeater {
+                            model: attRowDeleg.modelData
+                            delegate: Rectangle {
+                                id: thumb
+                                required property var modelData
+                                required property int index          // indice dentro da fileira
+                                property int gIndex: attRowDeleg.index * att.geom.cols + index  // indice global
+                                property bool sel: gIndex === root.attIndex
+                                implicitWidth: att.geom.tw
+                                implicitHeight: att.geom.th
+                                radius: 12
+                                color: sel ? "#332f6aa8" : "#1f2235"
+                                border.color: sel ? "#7aa2f7" : "#2a2e44"
+                                border.width: sel ? 3 : 1
+                                Behavior on border.color { ColorAnimation { duration: 90 } }
 
-                        ColumnLayout {
-                            anchors.fill: parent; anchors.margins: 8; spacing: 6
-                            ScreencopyView {
-                                Layout.fillWidth: true; Layout.fillHeight: true
-                                captureSource: thumb.modelData
-                                live: true
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 6
-                                Item { Layout.fillWidth: true }
-                                Image {
-                                    Layout.preferredWidth: 16; Layout.preferredHeight: 16
-                                    fillMode: Image.PreserveAspectFit
-                                    source: {
-                                        var ready = DesktopEntries.applications.values.length;  // re-avalia ao carregar
-                                        var id = thumb.modelData.appId;
-                                        var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
-                                        var icon = (de && de.icon && de.icon.length) ? de.icon : id;
-                                        return Quickshell.iconPath(icon, "application-x-executable");
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 8; spacing: 6
+                                    ScreencopyView {
+                                        Layout.fillWidth: true; Layout.fillHeight: true
+                                        captureSource: thumb.modelData
+                                        live: true
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Item { Layout.fillWidth: true }
+                                        Image {
+                                            Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                                            fillMode: Image.PreserveAspectFit
+                                            source: {
+                                                var ready = DesktopEntries.applications.values.length;  // re-avalia ao carregar
+                                                var id = thumb.modelData.appId;
+                                                var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
+                                                var icon = (de && de.icon && de.icon.length) ? de.icon : id;
+                                                return Quickshell.iconPath(icon, "application-x-executable");
+                                            }
+                                        }
+                                        Text {
+                                            color: thumb.sel ? "#c0caf5" : "#a9b1d6"
+                                            font.pixelSize: 11; elide: Text.ElideRight
+                                            Layout.maximumWidth: Math.max(40, thumb.width - 52)
+                                            text: (thumb.modelData.title && thumb.modelData.title.length)
+                                                  ? thumb.modelData.title : (thumb.modelData.appId || "?")
+                                        }
+                                        Item { Layout.fillWidth: true }
                                     }
                                 }
-                                Text {
-                                    color: thumb.sel ? "#c0caf5" : "#a9b1d6"
-                                    font.pixelSize: 11; elide: Text.ElideRight
-                                    Layout.maximumWidth: 188
-                                    text: (thumb.modelData.title && thumb.modelData.title.length)
-                                          ? thumb.modelData.title : (thumb.modelData.appId || "?")
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onPositionChanged: root.attIndex = thumb.gIndex
+                                    onClicked: { root.attIndex = thumb.gIndex; root.attConfirm(); }
                                 }
-                                Item { Layout.fillWidth: true }
                             }
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onPositionChanged: root.attIndex = thumb.index
-                            onClicked: { root.attIndex = thumb.index; root.attConfirm(); }
                         }
                     }
                 }
