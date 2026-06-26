@@ -17,6 +17,10 @@ arquivos reais) e `install.sh` idempotente.
 | `07-alttab-quickshell` | Alt+Tab estilo Windows com thumbnail ao vivo (overlay no mesmo processo da barra) |
 | `08-bonus-opcional` | Extras OPCIONAIS (wallpaper-engine, tts-read) que a barra chama em dois botoes; instalador interativo, nao obrigatorio |
 | `09-pc-heartbeat` | Os "batimentos" do PC: coracao + grafico de ECG + bpm que aceleram e ficam vermelhos sob estresse (CPU/RAM/temp). Componente reutilizavel + demo standalone; ja integrado na barra (06) |
+| `10-claude-monitor` | OPCIONAL: indicador do Claude Code (robo + agentes) + popup "Salas do Claude" (uma sala de aula por sessao). Empacotado pra plugar, nao vem ativo |
+
+A barra (06) e **theme-aware**: le o `colors.toml` do tema ativo do Omarchy e troca junto, com
+seletor de tema na central de acoes (card Personalizacao). Detalhes no README da pasta 06.
 
 ## Dependencias
 

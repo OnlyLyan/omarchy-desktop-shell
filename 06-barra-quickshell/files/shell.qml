@@ -1,5 +1,5 @@
 //@ pragma UseQApplication
-// Barra em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
+// Barra do Lucas em Quickshell. Objetivo: taskbar AGRUPADA por app dentro da barra.
 // Iteracao 1: menu Omarchy + taskbar agrupada + relogio. Modulos de status virao depois.
 import Quickshell
 import Quickshell.Wayland
@@ -23,6 +23,80 @@ ShellRoot {
     SystemClock {
         id: clock
         precision: SystemClock.Minutes
+    }
+
+    // ---- TEMA: le colors.toml do tema ativo do Omarchy ----
+    // Mapeia accent/fg/bg/color0-15 -> papeis semanticos. Shades intermediarios
+    // sao derivados (Qt.lighter/darker) pra ficar coerente em QUALQUER tema.
+    QtObject {
+        id: theme
+        // cores cruas (fallback = Tokyo Night atual, caso o arquivo falhe)
+        property color bg:       "#1a1b26"
+        property color fg:       "#a9b1d6"
+        property color fgBright: "#c0caf5"
+        property color accent:   "#7aa2f7"
+        property color sel:      "#7aa2f7"
+        property color cRed:     "#f7768e"
+        property color cGreen:   "#9ece6a"
+        property color cYellow:  "#e0af68"
+        property color cBlue:    "#7aa2f7"
+        property color cMagenta: "#bb9af7"
+        property color cCyan:    "#449dab"
+        property color c0:       "#32344a"
+        property color c8:       "#444b6a"
+        // shades derivados / aliases usados pela barra
+        readonly property color bgDark:   Qt.darker(bg, 1.4)
+        readonly property color bgAlt:    Qt.lighter(bg, 1.25)
+        readonly property color surface:  c0
+        readonly property color surface2: Qt.lighter(c0, 1.3)
+        readonly property color border:   c8
+        readonly property color fgDim:    Qt.darker(fg, 1.55)
+        readonly property color ok:       cGreen
+        readonly property color warn:     cYellow
+        readonly property color danger:   cRed
+        readonly property color info:     cBlue
+        readonly property color purple:   cMagenta
+        readonly property color accentText: fgBright
+        function applyMap(m) {
+            if (m.background) bg = m.background;
+            if (m.foreground) fg = m.foreground;
+            if (m.cursor) fgBright = m.cursor;
+            if (m.accent) accent = m.accent;
+            if (m.selection_background) sel = m.selection_background;
+            if (m.color1) cRed = m.color1;
+            if (m.color2) cGreen = m.color2;
+            if (m.color3) cYellow = m.color3;
+            if (m.color4) cBlue = m.color4;
+            if (m.color5) cMagenta = m.color5;
+            if (m.color6) cCyan = m.color6;
+            if (m.color0) c0 = m.color0;
+            if (m.color8) c8 = m.color8;
+        }
+        function parse(txt) {
+            var map = {}, lines = (txt || "").split("\n");
+            for (var i = 0; i < lines.length; i++) {
+                var r = lines[i].match(/^\s*([a-zA-Z0-9_]+)\s*=\s*"(#[0-9a-fA-F]{6,8})"/);
+                if (r) map[r[1]] = r[2];
+            }
+            applyMap(map);
+        }
+    }
+    // le e observa o colors.toml; chama theme.parse no load e a cada troca de tema
+    FileView {
+        id: themeFile
+        path: "/home/lucas/.config/omarchy/current/theme/colors.toml"
+        watchChanges: true
+        // API confirmada (Quickshell.Io FileView): text() le conteudo, signals
+        // loaded/fileChanged, metodo reload(). parse roda no load inicial e em
+        // cada mudanca do arquivo (troca de tema do Omarchy).
+        onLoaded: theme.parse(themeFile.text())
+        onFileChanged: { themeFile.reload(); theme.parse(themeFile.text()); }
+    }
+    // recarga reativa via IPC: `qs ipc call theme reload` (chamado pelo hook theme-set).
+    // re-le o colors.toml sem reiniciar o processo, entao a central nao fecha na troca.
+    IpcHandler {
+        target: "theme"
+        function reload(): void { themeFile.reload(); theme.parse(themeFile.text()); }
     }
 
     // mantem o sink de audio padrao "vivo" pra volume/mute atualizarem em tempo real
@@ -76,7 +150,7 @@ ShellRoot {
     property var wifiNets: []
     Process {
         id: wifiListProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/wifi-list.sh"]
+        command: ["/home/lucas/.config/quickshell/scripts/wifi-list.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -93,14 +167,14 @@ ShellRoot {
     }
     function refreshWifi() { wifiListProc.running = true; }
     function connectWifi(name) {
-        Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/wifi-connect.sh", name]);
+        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/wifi-connect.sh", name]);
     }
 
     // ---- wallpapers baixados (Wallpaper Engine): lista dinamica via controlador ----
     property var wallpapers: []
     Process {
         id: wallListProc
-        command: [Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "list"]
+        command: ["/home/lucas/.local/bin/wallpaper-engine", "list"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -120,22 +194,72 @@ ShellRoot {
     property string wallActive: ""
     Process {
         id: wallStatusProc
-        command: [Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "status"]
+        command: ["/home/lucas/.local/bin/wallpaper-engine", "status"]
         stdout: StdioCollector { onStreamFinished: {
             var s = this.text.trim();
             root.wallActive = (s.indexOf("running:") === 0) ? s.slice(8) : "";
         } }
     }
     function refreshWall() { wallListProc.running = true; wallStatusProc.running = true; }
-    function applyWall(id) { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "on", id]); root.wallActive = id; }
-    function browseWall() { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "browse"]); }
-    function offWall() { Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/wallpaper-engine", "off"]); }
+    function applyWall(id) { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "on", id]); root.wallActive = id; }
+    function browseWall() { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "browse"]); }
+    function offWall() { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "off"]); }
     function wallWarn(kind) {
         var msg = kind === "web"
             ? "Wallpaper tipo web nao roda nesta build (linux-wallpaperengine): costuma crashar."
             : "Wallpaper tipo aplicativo (.exe) nao roda no Linux.";
         Quickshell.execDetached(["notify-send", "-a", "Wallpaper", "Incompativel", msg]);
     }
+
+    // ---- temas Omarchy: lista (nome+fundo+accent) + tema atual ----
+    property var themes: []
+    property string currentTheme: ""
+    // ordem de exibicao: tema atual primeiro, resto alfabetico
+    readonly property var orderedThemes: {
+        var a = themes.slice();
+        a.sort(function (x, y) {
+            if (x.snake === currentTheme) return -1;
+            if (y.snake === currentTheme) return 1;
+            return x.snake < y.snake ? -1 : (x.snake > y.snake ? 1 : 0);
+        });
+        return a;
+    }
+    Process {
+        id: themesProc
+        // varre temas embutidos e do usuario; saida: snake|displayName|bg|accent por linha
+        command: ["bash", "-c",
+            "for d in \"$HOME/.local/share/omarchy/themes\"/*/ \"$HOME/.config/omarchy/themes\"/*/; do " +
+            "[ -f \"$d/colors.toml\" ] || continue; snake=$(basename \"$d\"); " +
+            "bg=$(grep -m1 '^background' \"$d/colors.toml\" | grep -oE '#[0-9a-fA-F]{6,8}'); " +
+            "ac=$(grep -m1 '^accent' \"$d/colors.toml\" | grep -oE '#[0-9a-fA-F]{6,8}'); " +
+            "echo \"$snake|$bg|$ac\"; done | sort -u"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var lines = this.text.trim().split("\n");
+                var seen = {}, arr = [];
+                for (var i = 0; i < lines.length; i++) {
+                    if (!lines[i]) continue;
+                    var p = lines[i].split("|");
+                    var snake = p[0];
+                    if (!snake || seen[snake]) continue;
+                    seen[snake] = true;
+                    var nice = snake.split("-").map(function (w) {
+                        return w.charAt(0).toUpperCase() + w.slice(1);
+                    }).join(" ");
+                    arr.push({ snake: snake, name: nice,
+                               bg: p[1] || "#000000", accent: p[2] || "#888888" });
+                }
+                root.themes = arr;
+            }
+        }
+    }
+    Process {
+        id: curThemeProc
+        command: ["cat", "/home/lucas/.config/omarchy/current/theme.name"]
+        stdout: StdioCollector { onStreamFinished: { root.currentTheme = this.text.trim(); } }
+    }
+    function refreshThemes() { themesProc.running = true; curThemeProc.running = true; }
+    function setTheme(snake) { Quickshell.execDetached(["omarchy-theme-set", snake]); root.currentTheme = snake; }
 
     // ---- clima (omarchy-weather): poll raro, curl a wttr.in ----
     QtObject {
@@ -148,7 +272,7 @@ ShellRoot {
     }
     Process {
         id: weatherProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/weather.sh"]
+        command: ["/home/lucas/.config/quickshell/scripts/weather.sh"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var p = this.text.trim().split("\t");
@@ -243,7 +367,7 @@ ShellRoot {
     // reconciliam o estado real um pouco depois (o clique ja virou na hora, otimista)
     Timer { id: tgDelay; interval: 800; repeat: false; onTriggered: tgProc.running = true }
     function toggleCaffeine() { tg.caffeine = !tg.caffeine; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-idle"]); tgDelay.restart(); }
-    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
+    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["/home/lucas/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
     function toggleMic() { tg.micMuted = !tg.micMuted; Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]); tgDelay.restart(); }
 
     // ============ volume do dispositivo de SAIDA REAL ============
@@ -254,7 +378,7 @@ ShellRoot {
     property real pendingVol: -1
     Process {
         id: volProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "get"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "get"]
         stdout: StdioCollector {
             onStreamFinished: {
                 if (root.volDragging) return;   // nao sobrescreve o valor enquanto arrasta
@@ -273,7 +397,7 @@ ShellRoot {
         id: volApply; interval: 90; repeat: false
         onTriggered: {
             if (root.pendingVol >= 0) {
-                Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh",
+                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh",
                     "set", "" + Math.round(root.pendingVol * 100)]);
                 root.pendingVol = -1;
             }
@@ -287,7 +411,7 @@ ShellRoot {
     }
     function toggleVolMute() {
         vols.mut = !vols.mut;     // otimista
-        Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "toggle"]);
+        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "toggle"]);
     }
 
     // ---- painel de audio estilo Windows: dispositivos de saida + volume por app + bass ----
@@ -296,7 +420,7 @@ ShellRoot {
     property bool bassOn: false
     Process {
         id: sinksProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "sinks"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sinks"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -308,7 +432,7 @@ ShellRoot {
     }
     Process {
         id: appsProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "apps"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "apps"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -320,7 +444,7 @@ ShellRoot {
     }
     Process {
         id: bassGetProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "bass-get"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-get"]
         stdout: StdioCollector { onStreamFinished: root.bassOn = (this.text.trim() === "1") }
     }
 
@@ -331,7 +455,7 @@ ShellRoot {
     property var micSources: []
     Process {
         id: micGetProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-get"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-get"]
         stdout: StdioCollector { onStreamFinished: {
             if (root.micDragging) return;
             var p = this.text.trim().split(" "); mics.vol = (parseInt(p[0]) || 0) / 100; mics.mut = p[1] === "1";
@@ -339,7 +463,7 @@ ShellRoot {
     }
     Process {
         id: micSrcProc
-        command: [Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "sources"]
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sources"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -349,21 +473,21 @@ ShellRoot {
         } }
     }
     Timer { id: micApply; interval: 90; repeat: false; onTriggered: {
-        if (root.micPending >= 0) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
+        if (root.micPending >= 0) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
     function refreshMic() { micGetProc.running = true; micSrcProc.running = true; }
     function setMicVol(f) { var ff = Math.max(0, Math.min(1, f)); mics.vol = ff; root.micPending = ff; if (!micApply.running) micApply.start(); }
-    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
-    function setInput(name) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "input", name]);
+    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
+    function setInput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "input", name]);
                               for (var i = 0; i < micSources.length; i++) micSources[i].active = (micSources[i].name === name);
                               micSources = micSources.slice(); audioRefresh.restart(); }
 
     function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; root.refreshVol(); root.refreshMic(); }
-    function setOutput(name) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "output", name]);
+    function setOutput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", name]);
                                for (var i = 0; i < audioSinks.length; i++) audioSinks[i].active = (audioSinks[i].name === name);
                                audioSinks = audioSinks.slice(); audioRefresh.restart(); }
     function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
-                                Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
-    function toggleAppMute(id) { Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
+                                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
+    function toggleAppMute(id) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
     // glyph por app (nerd font) pra identificar quem ta tocando no mixer
     function appIcon(name) {
         var n = (name || "").toLowerCase();
@@ -379,7 +503,7 @@ ShellRoot {
         return "󰝚";
     }
     function toggleBassNew() { root.bassOn = !root.bassOn;
-                               Quickshell.execDetached([Quickshell.env("HOME") + "/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
+                               Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
     Timer { id: audioRefresh; interval: 600; repeat: false; onTriggered: root.refreshAudio() }
 
     // ============ GPU (NVIDIA): temperatura + uso, por polling ============
@@ -487,7 +611,7 @@ ShellRoot {
         // pro workspace/monitor de origem. activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
-                Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
+                "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
                 tl.appId, tl.title || "", "max"]);
         else
             tl.activate();
@@ -549,7 +673,7 @@ ShellRoot {
             anchors { bottom: true; left: true; right: true }
             implicitHeight: 38
             // ~85% opaca: o wallpaper aparece sutilmente atraves da barra (AARRGGBB, D9=~85%)
-            color: "#d91a1b26"
+            color: Qt.alpha(theme.bg, 0.85)
 
             // ---- agrupa as janelas por appId ----
             property var groups: {
@@ -573,7 +697,7 @@ ShellRoot {
                     text: ""
                     font.family: "omarchy"
                     font.pixelSize: 20
-                    color: "#a9b1d6"
+                    color: theme.fg
                     Layout.alignment: Qt.AlignVCenter
                     MouseArea {
                         anchors.fill: parent
@@ -598,8 +722,8 @@ ShellRoot {
                 property int bpm: Math.round(60 + heartBeat.stress * 100)
 
                 // cor do batimento conforme o estresse (verde -> ambar -> vermelho)
-                property string beatColor: heartBeat.stress > 0.75 ? "#f7768e"
-                                           : (heartBeat.stress > 0.45 ? "#e0af68" : "#9ece6a")
+                property string beatColor: heartBeat.stress > 0.75 ? theme.danger
+                                           : (heartBeat.stress > 0.45 ? theme.warn : theme.ok)
 
                 Text {
                     id: heart
@@ -654,7 +778,7 @@ ShellRoot {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    color: "#6b7089"; font.pixelSize: 10
+                    color: theme.fgDim; font.pixelSize: 10
                     text: heartBeat.bpm + " bpm"
                 }
 
@@ -687,7 +811,7 @@ ShellRoot {
                             implicitWidth: 40
                             implicitHeight: 32
                             radius: 8
-                            color: anyActive ? "#33557aa2" : (hov.hovered ? "#22557aa2" : "transparent")
+                            color: anyActive ? Qt.alpha(theme.accent, 0.2) : (hov.hovered ? Qt.alpha(theme.accent, 0.13) : "transparent")
 
                             HoverHandler { id: hov }
                             // lista de janelas no hover: aberta enquanto hover no icone OU
@@ -724,7 +848,7 @@ ShellRoot {
                                         required property int index
                                         width: (appBtn.wins[index] && appBtn.wins[index].activated) ? 9 : 4
                                         height: 3; radius: 1.5
-                                        color: "#7aa2f7"
+                                        color: theme.accent
                                         Behavior on width { NumberAnimation { duration: 150 } }
                                     }
                                 }
@@ -741,7 +865,7 @@ ShellRoot {
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
                                     // cru, que trazia o overlay especial e travava.
                                     Quickshell.execDetached([
-                                        Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
+                                        "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
                                         appBtn.modelData.appId]);
                                 }
                             }
@@ -762,8 +886,8 @@ ShellRoot {
                                 Rectangle {
                                     anchors.fill: parent
                                     radius: 10
-                                    color: "#1a1b26"
-                                    border.color: "#33557aa2"
+                                    color: theme.bg
+                                    border.color: Qt.alpha(theme.accent, 0.2)
                                     border.width: 1
                                     HoverHandler { id: listHover }
 
@@ -780,8 +904,8 @@ ShellRoot {
                                                 Layout.fillWidth: true
                                                 implicitHeight: 28
                                                 radius: 6
-                                                color: rowHover.hovered ? "#33557aa2"
-                                                       : ((win && win.activated) ? "#22557aa2" : "transparent")
+                                                color: rowHover.hovered ? Qt.alpha(theme.accent, 0.2)
+                                                       : ((win && win.activated) ? Qt.alpha(theme.accent, 0.13) : "transparent")
                                                 HoverHandler { id: rowHover }
                                                 RowLayout {
                                                     anchors.fill: parent
@@ -790,7 +914,7 @@ ShellRoot {
                                                     // titulo: clique foca/restaura a janela
                                                     Text {
                                                         Layout.fillWidth: true
-                                                        color: "#a9b1d6"; font.pixelSize: 12
+                                                        color: theme.fg; font.pixelSize: 12
                                                         elide: Text.ElideRight
                                                         text: (win && win.title && win.title.length)
                                                               ? win.title : appBtn.modelData.appId
@@ -800,7 +924,7 @@ ShellRoot {
                                                             onClicked: {
                                                                 if (!win) return;
                                                                 Quickshell.execDetached([
-                                                                    Quickshell.env("HOME") + "/.config/quickshell/scripts/taskbar-activate.sh",
+                                                                    "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
                                                                     appBtn.modelData.appId, win.title || ""]);
                                                             }
                                                         }
@@ -809,11 +933,11 @@ ShellRoot {
                                                     Rectangle {
                                                         Layout.preferredWidth: 20; Layout.preferredHeight: 20
                                                         radius: 5
-                                                        color: xHover.hovered ? "#33f7768e" : "transparent"
+                                                        color: xHover.hovered ? Qt.alpha(theme.danger, 0.2) : "transparent"
                                                         Text {
                                                             anchors.centerIn: parent
                                                             font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12
-                                                            color: xHover.hovered ? "#f7768e" : "#6b7089"
+                                                            color: xHover.hovered ? theme.danger : theme.fgDim
                                                             text: "󰅖"
                                                         }
                                                         HoverHandler { id: xHover }
@@ -845,7 +969,7 @@ ShellRoot {
                 Text {
                     visible: root.hasPlayer
                     Layout.alignment: Qt.AlignVCenter
-                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#7aa2f7"
+                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
                     text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
                     MouseArea {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -889,7 +1013,7 @@ ShellRoot {
                 Text {
                     visible: omup.avail
                     Layout.alignment: Qt.AlignVCenter
-                    color: "#e0af68"
+                    color: theme.warn
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 14
                     text: "󰚰"
@@ -902,7 +1026,7 @@ ShellRoot {
                 // ---- cpu ----
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: "#a9b1d6"
+                    color: theme.fg
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
                     text: "󰓅 " + sys.cpu + "%"
@@ -916,7 +1040,7 @@ ShellRoot {
                 // ---- ram ----
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: "#a9b1d6"
+                    color: theme.fg
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
                     text: "󰍛 " + sys.mem + "%"
@@ -931,7 +1055,7 @@ ShellRoot {
                 Text {
                     visible: gpu.ok
                     Layout.alignment: Qt.AlignVCenter
-                    color: gpu.temp >= 80 ? "#f7768e" : "#a9b1d6"
+                    color: gpu.temp >= 80 ? theme.danger : theme.fg
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
                     text: "󰢮 " + gpu.temp + "°"
@@ -962,7 +1086,7 @@ ShellRoot {
                         anchors.verticalCenter: parent.verticalCenter
                         radius: 3
                         color: "transparent"
-                        border.color: "#a9b1d6"
+                        border.color: theme.fg
                         border.width: 1.5
 
                         // preenchimento proporcional a carga
@@ -973,8 +1097,8 @@ ShellRoot {
                             height: parent.height - 4
                             width: Math.max(0, (parent.width - 4) * battWidget.frac)
                             radius: 1.5
-                            color: battWidget.chg ? "#9ece6a"
-                                   : (battWidget.frac <= 0.15 ? "#f7768e" : "#7aa2f7")
+                            color: battWidget.chg ? theme.ok
+                                   : (battWidget.frac <= 0.15 ? theme.danger : theme.accent)
                             Behavior on width { NumberAnimation { duration: 300 } }
                         }
                     }
@@ -984,7 +1108,7 @@ ShellRoot {
                         anchors.leftMargin: 1
                         anchors.verticalCenter: parent.verticalCenter
                         width: 2.5; height: 6; radius: 1
-                        color: "#a9b1d6"
+                        color: theme.fg
                     }
                 }
 
@@ -992,7 +1116,7 @@ ShellRoot {
                 Text {
                     visible: tg.micMuted
                     Layout.alignment: Qt.AlignVCenter
-                    color: "#f7768e"
+                    color: theme.danger
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 14
                     text: "󰍭"
@@ -1008,13 +1132,13 @@ ShellRoot {
                     implicitWidth: 18; implicitHeight: 18
                     Text {
                         anchors.centerIn: parent
-                        color: "#a9b1d6"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                        color: theme.fg; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
                         text: "󰂚"
                     }
                     Rectangle {
                         visible: root.notifs.length > 0
                         anchors.right: parent.right; anchors.top: parent.top
-                        width: 6; height: 6; radius: 3; color: "#f7768e"
+                        width: 6; height: 6; radius: 3; color: theme.danger
                     }
                     MouseArea {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -1025,7 +1149,7 @@ ShellRoot {
                 // ---- chevron: abre a central de acoes ----
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: root.acOpen ? "#7aa2f7" : "#a9b1d6"
+                    color: root.acOpen ? theme.accent : theme.fg
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 16
                     text: root.acOpen ? "󰅀" : "󰅃"
@@ -1039,7 +1163,7 @@ ShellRoot {
                 // relogio
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: "#a9b1d6"
+                    color: theme.fg
                     font.pixelSize: 13
                     text: clock.date.toLocaleString(Qt.locale("pt_BR"), "ddd dd/MM  HH:mm")
                 }
@@ -1069,7 +1193,7 @@ ShellRoot {
 
         Rectangle {
             id: card
-            property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "wall" | "audio"
+            property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "perso" | "wall" | "audio"
             onViewChanged: { if (view === "wifi") root.refreshWifi();
                              else if (view === "notif") root.refreshNotifs();
                              else if (view === "wall") root.refreshWall();
@@ -1092,8 +1216,8 @@ ShellRoot {
             anchors.rightMargin: 8
             anchors.bottomMargin: 46
             radius: 16
-            color: "#1a1b26"
-            border.color: "#33557aa2"
+            color: theme.bg
+            border.color: Qt.alpha(theme.accent, 0.2)
             border.width: 1
 
             // absorve cliques no card pra nao fechar ao clicar em espaco vazio
@@ -1117,7 +1241,7 @@ ShellRoot {
                 Text {
                     visible: root.hasPlayer
                     text: "Tocando agora"
-                    color: "#6b7089"; font.pixelSize: 11; font.bold: true
+                    color: theme.fgDim; font.pixelSize: 11; font.bold: true
                 }
 
                 // player de midia (MPRIS): capa + faixa + controles
@@ -1125,7 +1249,7 @@ ShellRoot {
                     Layout.fillWidth: true
                     visible: root.hasPlayer
                     implicitHeight: 64; radius: 12
-                    color: "#1f2235"
+                    color: theme.bgAlt
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10
                         anchors.topMargin: 8; anchors.bottomMargin: 8
@@ -1143,36 +1267,36 @@ ShellRoot {
                             Text {
                                 anchors.centerIn: parent
                                 visible: artImg.status !== Image.Ready
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 26; color: "#7aa2f7"
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 26; color: theme.accent
                                 text: "󰝚"
                             }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 1
                             Text {
-                                Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12; font.bold: true
+                                Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12; font.bold: true
                                 elide: Text.ElideRight
                                 text: root.player ? (root.player.trackTitle || "—") : "—"
                             }
                             Text {
-                                Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 11
+                                Layout.fillWidth: true; color: theme.fg; font.pixelSize: 11
                                 elide: Text.ElideRight
                                 text: root.player ? (root.player.trackArtist || "") : ""
                             }
                         }
                         Text {
-                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"; text: "󰒮"
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg; text: "󰒮"
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                         onClicked: if (root.player) root.player.previous() }
                         }
                         Text {
-                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 22; color: "#7aa2f7"
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 22; color: theme.accent
                             text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                         onClicked: if (root.player) root.player.togglePlaying() }
                         }
                         Text {
-                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"; text: "󰒭"
+                            font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg; text: "󰒭"
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                         onClicked: if (root.player) root.player.next() }
                         }
@@ -1186,7 +1310,7 @@ ShellRoot {
                     Text {
                         text: vols.mut ? "󰝟" : "󰕾"
                         font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
-                        color: "#a9b1d6"
+                        color: theme.fg
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: root.toggleVolMute()
@@ -1199,10 +1323,10 @@ ShellRoot {
                         Rectangle {
                             anchors.left: parent.left; anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            height: 6; radius: 3; color: "#2a2e44"
+                            height: 6; radius: 3; color: theme.surface
                             Rectangle {
                                 width: parent.width * (vols.mut ? 0 : vols.vol)
-                                height: parent.height; radius: 3; color: "#7aa2f7"
+                                height: parent.height; radius: 3; color: theme.accent
                             }
                         }
                         MouseArea {
@@ -1215,12 +1339,12 @@ ShellRoot {
                     Text {
                         Layout.preferredWidth: 32
                         text: Math.round(vols.vol * 100) + "%"
-                        color: "#a9b1d6"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight
+                        color: theme.fg; font.pixelSize: 12; horizontalAlignment: Text.AlignRight
                     }
                     // abre o painel de audio (dispositivos de saida + volume por app)
                     Text {
                         text: "󰓃"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16
-                        color: audOpenMa.containsMouse ? "#7aa2f7" : "#a9b1d6"
+                        color: audOpenMa.containsMouse ? theme.accent : theme.fg
                         MouseArea { id: audOpenMa; anchors.fill: parent; hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: { root.refreshAudio(); card.view = "audio" } }
@@ -1230,7 +1354,7 @@ ShellRoot {
                 // secao: ajustes rapidos
                 Text {
                     text: "Ajustes rápidos"
-                    color: "#6b7089"; font.pixelSize: 11; font.bold: true
+                    color: theme.fgDim; font.pixelSize: 11; font.bold: true
                 }
 
                 // toggles rapidos: caffeine, nightlight, mic
@@ -1252,19 +1376,19 @@ ShellRoot {
                                             : !tg.micMuted))
                             Layout.fillWidth: true
                             implicitHeight: 52; radius: 12
-                            color: on ? "#33557aa2" : "#1f2235"
-                            border.color: on ? "#557aa2" : "transparent"; border.width: 1
+                            color: on ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                            border.color: on ? theme.accent : "transparent"; border.width: 1
                             ColumnLayout {
                                 anchors.centerIn: parent; spacing: 2
                                 Text {
                                     Layout.alignment: Qt.AlignHCenter
                                     font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 17
-                                    color: on ? "#7aa2f7" : "#6b7089"
+                                    color: on ? theme.accent : theme.fgDim
                                     text: (modelData.key === "mic" && tg.micMuted) ? "󰍭" : modelData.icon
                                 }
                                 Text {
                                     Layout.alignment: Qt.AlignHCenter
-                                    color: "#a9b1d6"; font.pixelSize: 10
+                                    color: theme.fg; font.pixelSize: 10
                                     text: modelData.label
                                 }
                             }
@@ -1289,17 +1413,17 @@ ShellRoot {
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 52; radius: 12
-                        color: "#22557aa2"
+                        color: Qt.alpha(theme.accent, 0.13)
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 1
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#7aa2f7"
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent
                                 text: sys.net === "eth" ? "󰈀" : (sys.net.indexOf("wifi") === 0 ? "󰤨" : "󰤭")
                             }
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                color: "#a9b1d6"; font.pixelSize: 11
+                                color: theme.fg; font.pixelSize: 11
                                 elide: Text.ElideRight
                                 Layout.maximumWidth: 120
                                 text: sys.net === "eth" ? "Cabo"
@@ -1319,19 +1443,19 @@ ShellRoot {
                         implicitHeight: 52; radius: 12
                         property var adp: Bluetooth.defaultAdapter
                         property bool on: adp ? adp.enabled : false
-                        color: on ? "#33557aa2" : "#1f2235"
-                        border.color: on ? "#557aa2" : "transparent"; border.width: 1
+                        color: on ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                        border.color: on ? theme.accent : "transparent"; border.width: 1
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 1
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
                                 font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
-                                color: btPill.on ? "#7aa2f7" : "#6b7089"
+                                color: btPill.on ? theme.accent : theme.fgDim
                                 text: btPill.on ? "󰂯" : "󰂲"
                             }
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                color: "#a9b1d6"; font.pixelSize: 11
+                                color: theme.fg; font.pixelSize: 11
                                 text: "Bluetooth"
                             }
                         }
@@ -1347,25 +1471,25 @@ ShellRoot {
 
                 // (bateria e clima removidos da central em 2026-06-24: ja aparecem na taskbar)
 
-                // papel de parede: card proprio (icone + titulo + subtitulo + chevron)
+                // personalizacao: card proprio (tema + papel de parede)
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: 46; radius: 12
-                    color: wallMa.containsMouse ? "#33557aa2" : "#1f2235"
+                    color: persoMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#7aa2f7"; text: "󰸉" }
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰉼" }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 0
-                            Text { color: "#c0caf5"; font.pixelSize: 12; font.bold: true; text: "Papel de parede" }
-                            Text { color: "#6b7089"; font.pixelSize: 10; text: "Trocar ou baixar" }
+                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Personalizacao" }
+                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Tema e papel de parede" }
                         }
-                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: "#6b7089" }
+                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
                     }
                     MouseArea {
-                        id: wallMa
+                        id: persoMa
                         anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.refreshWall(); card.view = "wall" }
+                        onClicked: { root.refreshThemes(); card.view = "perso" }
                     }
                 }
 
@@ -1382,17 +1506,17 @@ ShellRoot {
                             required property var modelData
                             Layout.fillWidth: true
                             implicitHeight: 46; radius: 12
-                            color: actMa.containsMouse ? "#33557aa2" : "#1f2235"
+                            color: actMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
                             ColumnLayout {
                                 anchors.centerIn: parent; spacing: 2
                                 Text {
                                     Layout.alignment: Qt.AlignHCenter
-                                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#a9b1d6"
+                                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
                                     text: modelData.icon
                                 }
                                 Text {
                                     Layout.alignment: Qt.AlignHCenter
-                                    color: "#a9b1d6"; font.pixelSize: 10
+                                    color: theme.fg; font.pixelSize: 10
                                     text: modelData.label
                                 }
                             }
@@ -1419,14 +1543,14 @@ ShellRoot {
                     Layout.fillWidth: true
                     spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { text: "Redes Wi-Fi"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text { text: "Redes Wi-Fi"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Item { Layout.fillWidth: true }
                     Text {
-                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#a9b1d6"
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: root.refreshWifi() }
                     }
@@ -1438,25 +1562,25 @@ ShellRoot {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: 36; radius: 8
-                        color: netRowMa.containsMouse ? "#33557aa2"
-                               : (modelData.conn ? "#22557aa2" : "transparent")
+                        color: netRowMa.containsMouse ? Qt.alpha(theme.accent, 0.2)
+                               : (modelData.conn ? Qt.alpha(theme.accent, 0.13) : "transparent")
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 10; anchors.rightMargin: 10
                             spacing: 8
                             Text {
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#7aa2f7"
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
                                 text: modelData.sig >= 4 ? "󰤨" : (modelData.sig === 3 ? "󰤥"
                                       : (modelData.sig === 2 ? "󰤢" : (modelData.sig >= 1 ? "󰤟" : "󰤯")))
                             }
                             Text {
                                 Layout.fillWidth: true
-                                color: "#a9b1d6"; font.pixelSize: 12; elide: Text.ElideRight
+                                color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
                                 text: modelData.name
                             }
                             Text {
                                 visible: modelData.conn
-                                color: "#9ece6a"; font.pixelSize: 10
+                                color: theme.ok; font.pixelSize: 10
                                 text: "conectado"
                             }
                         }
@@ -1473,7 +1597,7 @@ ShellRoot {
                     visible: root.wifiNets.length === 0
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
-                    color: "#6b7089"; font.pixelSize: 11
+                    color: theme.fgDim; font.pixelSize: 11
                     text: "Procurando redes…"
                 }
             }
@@ -1493,23 +1617,23 @@ ShellRoot {
                     Layout.fillWidth: true
                     spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { text: "Bluetooth"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text { text: "Bluetooth"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Item { Layout.fillWidth: true }
                     // escanear (toggle discovering) — so quando o radio esta ligado
                     Text {
                         visible: btCol.adp ? btCol.adp.enabled : false
                         text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16
-                        color: (btCol.adp && btCol.adp.discovering) ? "#7aa2f7" : "#a9b1d6"
+                        color: (btCol.adp && btCol.adp.discovering) ? theme.accent : theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: if (btCol.adp) btCol.adp.discovering = !btCol.adp.discovering }
                     }
                     // abrir bluetui (parear dispositivo novo)
                     Text {
-                        text: "󰍜"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#a9b1d6"
+                        text: "󰍜"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: { Quickshell.execDetached(["omarchy-launch-bluetooth"]); root.acOpen = false } }
                     }
@@ -1520,10 +1644,10 @@ ShellRoot {
                     visible: btCol.adp ? !btCol.adp.enabled : true
                     Layout.fillWidth: true
                     implicitHeight: 40; radius: 8
-                    color: btOnMa.containsMouse ? "#33557aa2" : "#1f2235"
+                    color: btOnMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
                     Text {
                         anchors.centerIn: parent
-                        color: "#a9b1d6"; font.pixelSize: 12
+                        color: theme.fg; font.pixelSize: 12
                         text: "Bluetooth desligado — toque para ligar"
                     }
                     MouseArea { id: btOnMa; anchors.fill: parent; hoverEnabled: true
@@ -1543,15 +1667,15 @@ ShellRoot {
                                  && (modelData.paired || modelData.bonded)
                         Layout.fillWidth: true
                         implicitHeight: 40; radius: 8
-                        color: btRowMa.containsMouse ? "#33557aa2"
-                               : (modelData.connected ? "#22557aa2" : "transparent")
+                        color: btRowMa.containsMouse ? Qt.alpha(theme.accent, 0.2)
+                               : (modelData.connected ? Qt.alpha(theme.accent, 0.13) : "transparent")
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 10; anchors.rightMargin: 10
                             spacing: 8
                             Text {
                                 font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                                color: btRow.modelData.connected ? "#7aa2f7" : "#6b7089"
+                                color: btRow.modelData.connected ? theme.accent : theme.fgDim
                                 text: "󰂯"
                             }
                             ColumnLayout {
@@ -1559,18 +1683,18 @@ ShellRoot {
                                 spacing: 0
                                 Text {
                                     Layout.fillWidth: true
-                                    color: "#a9b1d6"; font.pixelSize: 12; elide: Text.ElideRight
+                                    color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
                                     text: btRow.modelData.deviceName || btRow.modelData.name || btRow.modelData.address
                                 }
                                 Text {
                                     visible: btRow.modelData.batteryAvailable && btRow.modelData.connected
-                                    color: "#6b7089"; font.pixelSize: 9
+                                    color: theme.fgDim; font.pixelSize: 9
                                     text: "bateria " + Math.round(btRow.modelData.battery * 100) + "%"
                                 }
                             }
                             Text {
-                                color: btRow.busy ? "#e0af68"
-                                       : (btRow.modelData.connected ? "#9ece6a" : "#6b7089")
+                                color: btRow.busy ? theme.warn
+                                       : (btRow.modelData.connected ? theme.ok : theme.fgDim)
                                 font.pixelSize: 10
                                 text: btRow.busy
                                       ? (btRow.modelData.state === BluetoothDeviceState.Connecting ? "conectando…" : "desconectando…")
@@ -1597,7 +1721,7 @@ ShellRoot {
                                  || Bluetooth.devices.values.filter(function (d) { return d.paired || d.bonded; }).length === 0)
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
-                    color: "#6b7089"; font.pixelSize: 11
+                    color: theme.fgDim; font.pixelSize: 11
                     text: "Nenhum dispositivo pareado"
                 }
             }
@@ -1614,16 +1738,16 @@ ShellRoot {
                     Layout.fillWidth: true
                     spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { text: "Notificacoes"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text { text: "Notificacoes"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Item { Layout.fillWidth: true }
                     // ler a notificacao mais recente (a do topo) em voz, via TTS
                     Text {
                         text: "󰔊"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                        color: root.notifs.length > 0 ? "#a9b1d6" : "#3b3f54"
+                        color: root.notifs.length > 0 ? theme.fg : theme.surface2
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         if (root.notifs.length === 0) return;
@@ -1636,7 +1760,7 @@ ShellRoot {
                     // (restore traz de volta, dismiss --no-history remove sem regravar)
                     Text {
                         text: "󰎟"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                        color: root.notifs.length > 0 ? "#a9b1d6" : "#3b3f54"
+                        color: root.notifs.length > 0 ? theme.fg : theme.surface2
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         Quickshell.execDetached(["sh", "-c",
@@ -1647,7 +1771,7 @@ ShellRoot {
                                     } }
                     }
                     Text {
-                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: "#a9b1d6"
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: root.refreshNotifs() }
                     }
@@ -1659,25 +1783,25 @@ ShellRoot {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: ntCol.implicitHeight + 12
-                        radius: 8; color: "#1f2235"
+                        radius: 8; color: theme.bgAlt
                         ColumnLayout {
                             id: ntCol
                             anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
                             anchors.leftMargin: 10; anchors.rightMargin: 10
                             spacing: 1
                             Text {
-                                Layout.fillWidth: true; color: "#7aa2f7"; font.pixelSize: 10
+                                Layout.fillWidth: true; color: theme.accent; font.pixelSize: 10
                                 elide: Text.ElideRight
                                 text: (modelData["app_name"] || "")
                             }
                             Text {
-                                Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                                Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
                                 elide: Text.ElideRight
                                 text: (modelData["summary"] || "")
                             }
                             Text {
                                 Layout.fillWidth: true; visible: !!(modelData["body"])
-                                color: "#a9b1d6"; font.pixelSize: 11
+                                color: theme.fg; font.pixelSize: 11
                                 wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
                                 text: (modelData["body"] || "")
                             }
@@ -1689,8 +1813,122 @@ ShellRoot {
                     visible: root.notifs.length === 0
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
-                    color: "#6b7089"; font.pixelSize: 11
+                    color: theme.fgDim; font.pixelSize: 11
                     text: "Sem notificacoes recentes"
+                }
+            }
+
+            // ---- view: personalizacao (tema + papel de parede) ----
+            ColumnLayout {
+                id: persoCol
+                visible: card.view === "perso"
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                anchors.margins: 14
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: card.view = "main" }
+                    }
+                    Text { Layout.fillWidth: true; text: "Personalizacao"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                    Text {
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                        color: persoRefMa.containsMouse ? theme.accent : theme.fgDim
+                        MouseArea { id: persoRefMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: root.refreshThemes() }
+                    }
+                }
+
+                Text { Layout.fillWidth: true; text: "Tema"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+
+                // grade de temas: nome + amostras (fundo/accent), atual destacado
+                Flickable {
+                    Layout.fillWidth: true
+                    implicitHeight: Math.min(themeGrid.implicitHeight, 260)
+                    contentWidth: width
+                    contentHeight: themeGrid.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    GridLayout {
+                        id: themeGrid
+                        width: parent.width
+                        columns: 2
+                        rowSpacing: 8; columnSpacing: 8
+
+                        Repeater {
+                            model: root.orderedThemes
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool current: modelData.snake === root.currentTheme
+                                Layout.fillWidth: true
+                                implicitHeight: 42; radius: 10
+                                color: current ? Qt.alpha(theme.accent, 0.22)
+                                                : (tHov.containsMouse ? Qt.alpha(theme.accent, 0.12) : theme.bgAlt)
+                                border.width: current ? 1 : 0
+                                border.color: theme.accent
+                                RowLayout {
+                                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                                    // amostras de cor do tema
+                                    Rectangle {
+                                        width: 22; height: 22; radius: 6
+                                        color: modelData.bg
+                                        border.width: 1; border.color: Qt.alpha(theme.fg, 0.25)
+                                        Rectangle {
+                                            width: 11; height: 11; radius: 3
+                                            anchors.right: parent.right; anchors.bottom: parent.bottom
+                                            anchors.rightMargin: 2; anchors.bottomMargin: 2
+                                            color: modelData.accent
+                                            border.width: 1; border.color: Qt.alpha(theme.bg, 0.4)
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modelData.name
+                                        color: current ? theme.fgBright : theme.fg
+                                        font.pixelSize: 11; font.bold: current
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        visible: current
+                                        text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 13; color: theme.accent
+                                    }
+                                }
+                                MouseArea {
+                                    id: tHov
+                                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.setTheme(modelData.snake)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // papel de parede: leva pro previewer existente
+                Rectangle {
+                    Layout.fillWidth: true; Layout.topMargin: 4
+                    implicitHeight: 44; radius: 10
+                    color: persoWallMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰸉" }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 0
+                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Papel de parede" }
+                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Trocar ou baixar" }
+                        }
+                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
+                    }
+                    MouseArea {
+                        id: persoWallMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { root.refreshWall(); card.view = "wall" }
+                    }
                 }
             }
 
@@ -1706,15 +1944,15 @@ ShellRoot {
                     Layout.fillWidth: true
                     spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { Layout.fillWidth: true; text: "Papel de parede"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text { Layout.fillWidth: true; text: "Papel de parede"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     // recarrega a lista (apos baixar novos no Steam WE)
                     Text {
                         text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                        color: wallRefMa.containsMouse ? "#7aa2f7" : "#6b7089"
+                        color: wallRefMa.containsMouse ? theme.accent : theme.fgDim
                         MouseArea { id: wallRefMa; anchors.fill: parent; hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor; onClicked: root.refreshWall() }
                     }
@@ -1725,14 +1963,14 @@ ShellRoot {
                     visible: root.wallpapers.length === 0
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    color: "#6b7089"; font.pixelSize: 11
+                    color: theme.fgDim; font.pixelSize: 11
                     text: "Nenhum wallpaper. Requer linux-wallpaperengine (AUR) + Wallpaper Engine (Steam). Use \"Baixar mais\" pra abrir e baixar."
                 }
 
                 // legenda: âmbar = web (crasha), cinza = app (incompatível), alto-falante = tem som
                 Text {
                     visible: root.wallpapers.length > 0
-                    Layout.fillWidth: true; color: "#6b7089"; font.pixelSize: 10
+                    Layout.fillWidth: true; color: theme.fgDim; font.pixelSize: 10
                     text: "Compatíveis primeiro. Âmbar/cinza = incompatível. 󰕾 = tem som."
                     font.family: "JetBrainsMono Nerd Font"
                 }
@@ -1762,11 +2000,11 @@ ShellRoot {
                                 height: width * 0.62
                                 radius: 8
                                 clip: true
-                                color: "#15161e"
+                                color: theme.bgDark
                                 // ativo = borda verde fixa; hover = borda azul
                                 property bool isActive: modelData.wid === root.wallActive
                                 border.width: isActive ? 3 : ((modelData.kind === "ok" && tnMa.containsMouse) ? 2 : 0)
-                                border.color: isActive ? "#9ece6a" : "#7aa2f7"
+                                border.color: isActive ? theme.ok : theme.accent
 
                                 Image {
                                     anchors.fill: parent
@@ -1782,18 +2020,18 @@ ShellRoot {
                                     visible: parent.isActive
                                     anchors { right: parent.right; top: parent.top; margins: 3 }
                                     text: "󰄬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12
-                                    color: "#9ece6a"; style: Text.Outline; styleColor: "#15161e"
+                                    color: theme.ok; style: Text.Outline; styleColor: theme.bgDark
                                 }
 
                                 // faixa inferior com o titulo
                                 Rectangle {
                                     anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
                                     height: 18
-                                    color: "#cc15161e"
+                                    color: Qt.alpha(theme.bgDark, 0.8)
                                     Text {
                                         anchors { fill: parent; leftMargin: 5; rightMargin: 5 }
                                         verticalAlignment: Text.AlignVCenter
-                                        color: "#c0caf5"; font.pixelSize: 9
+                                        color: theme.fgBright; font.pixelSize: 9
                                         elide: Text.ElideRight; text: modelData.name
                                     }
                                 }
@@ -1804,10 +2042,10 @@ ShellRoot {
                                     anchors { left: parent.left; top: parent.top; margins: 4 }
                                     radius: 4; height: 14
                                     width: kindLbl.implicitWidth + 8
-                                    color: modelData.kind === "web" ? "#cce0af68" : "#cc6b7089"
+                                    color: modelData.kind === "web" ? Qt.alpha(theme.warn, 0.8) : Qt.alpha(theme.fgDim, 0.8)
                                     Text {
                                         id: kindLbl; anchors.centerIn: parent
-                                        color: "#15161e"; font.pixelSize: 8; font.bold: true
+                                        color: theme.bgDark; font.pixelSize: 8; font.bold: true
                                         text: modelData.kind === "web" ? "web" : "app"
                                     }
                                 }
@@ -1817,8 +2055,8 @@ ShellRoot {
                                     visible: modelData.audio
                                     anchors { right: parent.right; top: parent.top; margins: 4 }
                                     text: "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11
-                                    color: "#e0af68"
-                                    style: Text.Outline; styleColor: "#15161e"
+                                    color: theme.warn
+                                    style: Text.Outline; styleColor: theme.bgDark
                                 }
 
                                 MouseArea {
@@ -1835,17 +2073,17 @@ ShellRoot {
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
                 // baixar mais: desliga o linux-wpe e abre o Wallpaper Engine do Steam
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: 36; radius: 8
-                    color: wDlMa.containsMouse ? "#3340c057" : "transparent"
+                    color: wDlMa.containsMouse ? Qt.alpha(theme.ok, 0.2) : "transparent"
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#9ece6a"; text: "󰇚" }
-                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Baixar mais (abrir Wallpaper Engine)" }
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.ok; text: "󰇚" }
+                        Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Baixar mais (abrir Wallpaper Engine)" }
                     }
                     MouseArea {
                         id: wDlMa
@@ -1858,11 +2096,11 @@ ShellRoot {
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: 36; radius: 8
-                    color: wOffMa.containsMouse ? "#33f7768e" : "transparent"
+                    color: wOffMa.containsMouse ? Qt.alpha(theme.danger, 0.2) : "transparent"
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: "#f7768e"; text: "󰸉" }
-                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Desligar wallpaper animado" }
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.danger; text: "󰸉" }
+                        Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Desligar wallpaper animado" }
                     }
                     MouseArea {
                         id: wOffMa
@@ -1883,14 +2121,14 @@ ShellRoot {
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { Layout.fillWidth: true; text: "Som"; color: "#a9b1d6"; font.pixelSize: 14; font.bold: true }
+                    Text { Layout.fillWidth: true; text: "Som"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Text {
                         text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                        color: audRefMa.containsMouse ? "#7aa2f7" : "#6b7089"
+                        color: audRefMa.containsMouse ? theme.accent : theme.fgDim
                         MouseArea { id: audRefMa; anchors.fill: parent; hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor; onClicked: root.refreshAudio() }
                     }
@@ -1899,14 +2137,14 @@ ShellRoot {
                 // volume master (sink padrao, mesmo das teclas de volume)
                 RowLayout {
                     Layout.fillWidth: true; spacing: 10
-                    Text { text: vols.mut ? "󰝟" : "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: "#a9b1d6"
+                    Text { text: vols.mut ? "󰝟" : "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleVolMute() } }
                     Item {
                         Layout.fillWidth: true; implicitHeight: 20
                         Rectangle {
                             anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
-                            height: 6; radius: 3; color: "#2a2e44"
-                            Rectangle { width: parent.width * (vols.mut ? 0 : vols.vol); height: parent.height; radius: 3; color: "#7aa2f7" }
+                            height: 6; radius: 3; color: theme.surface
+                            Rectangle { width: parent.width * (vols.mut ? 0 : vols.vol); height: parent.height; radius: 3; color: theme.accent }
                         }
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -1915,28 +2153,28 @@ ShellRoot {
                             onReleased: { root.volDragging = false; root.refreshVol(); }
                         }
                     }
-                    Text { Layout.preferredWidth: 32; text: Math.round(vols.vol * 100) + "%"; color: "#a9b1d6"
+                    Text { Layout.preferredWidth: 32; text: Math.round(vols.vol * 100) + "%"; color: theme.fg
                            font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
                 }
 
                 // saida: escolher o dispositivo (igual Windows)
-                Text { text: "Saída"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
+                Text { text: "Saída"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
                 Repeater {
                     model: root.audioSinks
                     delegate: Rectangle {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: 34; radius: 8
-                        color: modelData.active ? "#33557aa2" : (sinkMa.containsMouse ? "#1f557aa2" : "transparent")
+                        color: modelData.active ? Qt.alpha(theme.accent, 0.2) : (sinkMa.containsMouse ? Qt.alpha(theme.accent, 0.12) : "transparent")
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                             Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                                   color: modelData.active ? "#7aa2f7" : "#a9b1d6"
+                                   color: modelData.active ? theme.accent : theme.fg
                                    text: modelData.icon === "headphones" ? "󰋋" : (modelData.icon === "tv" ? "󰔂" : (modelData.icon === "usb" ? "󰕓" : "󰓃")) }
-                            Text { Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                            Text { Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
                                    elide: Text.ElideRight; text: modelData.desc }
                             Text { visible: modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
-                                   font.pixelSize: 13; color: "#9ece6a" }
+                                   font.pixelSize: 13; color: theme.ok }
                         }
                         MouseArea {
                             id: sinkMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
@@ -1946,8 +2184,8 @@ ShellRoot {
                 }
 
                 // aplicativos: volume por programa (igual mixer do Windows)
-                Text { visible: root.audioApps.length > 0; text: "Aplicativos"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
-                Text { visible: root.audioApps.length === 0; text: "Nenhum app tocando agora."; color: "#6b7089"; font.pixelSize: 11 }
+                Text { visible: root.audioApps.length > 0; text: "Aplicativos"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+                Text { visible: root.audioApps.length === 0; text: "Nenhum app tocando agora."; color: theme.fgDim; font.pixelSize: 11 }
                 Repeater {
                     model: root.audioApps
                     delegate: RowLayout {
@@ -1957,18 +2195,18 @@ ShellRoot {
                         Layout.fillWidth: true; spacing: 8
                         // icone do app (identifica + clique muta; vermelho quando mudo)
                         Text { text: root.appIcon(appRow.modelData.name); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                               color: appRow.modelData.mut ? "#f7768e" : "#7aa2f7"; opacity: appRow.modelData.mut ? 0.7 : 1
+                               color: appRow.modelData.mut ? theme.danger : theme.accent; opacity: appRow.modelData.mut ? 0.7 : 1
                                Layout.preferredWidth: 20; horizontalAlignment: Text.AlignHCenter
                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleAppMute(appRow.modelData.id) } }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 11; elide: Text.ElideRight; text: appRow.modelData.name }
+                            Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 11; elide: Text.ElideRight; text: appRow.modelData.name }
                             Item {
                                 Layout.fillWidth: true; implicitHeight: 14
                                 Rectangle {
                                     anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
-                                    height: 5; radius: 3; color: "#2a2e44"
-                                    Rectangle { width: parent.width * Math.min(1, appRow.av); height: parent.height; radius: 3; color: "#bb9af7" }
+                                    height: 5; radius: 3; color: theme.surface
+                                    Rectangle { width: parent.width * Math.min(1, appRow.av); height: parent.height; radius: 3; color: theme.purple }
                                 }
                                 MouseArea {
                                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -1977,26 +2215,26 @@ ShellRoot {
                                 }
                             }
                         }
-                        Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: "#6b7089"
+                        Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: theme.fgDim
                                font.pixelSize: 10; horizontalAlignment: Text.AlignRight }
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
                 // ---- microfone ----
-                Text { text: "Microfone"; color: "#6b7089"; font.pixelSize: 11; font.bold: true }
+                Text { text: "Microfone"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 10
                     Text { text: mics.mut ? "󰍭" : "󰍬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
-                           color: mics.mut ? "#f7768e" : "#a9b1d6"
+                           color: mics.mut ? theme.danger : theme.fg
                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleMicMuteAudio() } }
                     Item {
                         Layout.fillWidth: true; implicitHeight: 20
                         Rectangle {
                             anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
-                            height: 6; radius: 3; color: "#2a2e44"
-                            Rectangle { width: parent.width * (mics.mut ? 0 : mics.vol); height: parent.height; radius: 3; color: "#9ece6a" }
+                            height: 6; radius: 3; color: theme.surface
+                            Rectangle { width: parent.width * (mics.mut ? 0 : mics.vol); height: parent.height; radius: 3; color: theme.ok }
                         }
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -2005,7 +2243,7 @@ ShellRoot {
                             onReleased: { root.micDragging = false; root.refreshMic(); }
                         }
                     }
-                    Text { Layout.preferredWidth: 32; text: Math.round(mics.vol * 100) + "%"; color: "#a9b1d6"
+                    Text { Layout.preferredWidth: 32; text: Math.round(mics.vol * 100) + "%"; color: theme.fg
                            font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
                 }
                 // escolher o microfone de entrada
@@ -2015,34 +2253,34 @@ ShellRoot {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: 34; radius: 8
-                        color: modelData.active ? "#3340c057" : (srcMa.containsMouse ? "#1f40c057" : "transparent")
+                        color: modelData.active ? Qt.alpha(theme.ok, 0.2) : (srcMa.containsMouse ? Qt.alpha(theme.ok, 0.12) : "transparent")
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                             Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                                   color: modelData.active ? "#9ece6a" : "#a9b1d6"
+                                   color: modelData.active ? theme.ok : theme.fg
                                    text: modelData.icon === "btmic" ? "󰋎" : "󰍬" }
-                            Text { Layout.fillWidth: true; color: "#c0caf5"; font.pixelSize: 12
+                            Text { Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
                                    elide: Text.ElideRight; text: modelData.desc }
                             Text { visible: modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
-                                   font.pixelSize: 13; color: "#9ece6a" }
+                                   font.pixelSize: 13; color: theme.ok }
                         }
                         MouseArea { id: srcMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                     onClicked: root.setInput(modelData.name) }
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#2a2e42" }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
                 // bass boost: liga o EasyEffects sob demanda, roteado pro dispositivo atual
                 Rectangle {
                     Layout.fillWidth: true; implicitHeight: 36; radius: 8
-                    color: root.bassOn ? "#33bb9af7" : (bassMa2.containsMouse ? "#1fbb9af7" : "transparent")
+                    color: root.bassOn ? Qt.alpha(theme.purple, 0.2) : (bassMa2.containsMouse ? Qt.alpha(theme.purple, 0.12) : "transparent")
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                         Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                               color: root.bassOn ? "#bb9af7" : "#a9b1d6"; text: "󰋃" }
-                        Text { Layout.fillWidth: true; color: "#a9b1d6"; font.pixelSize: 12; text: "Bass boost (EasyEffects)" }
-                        Text { color: root.bassOn ? "#9ece6a" : "#6b7089"; font.pixelSize: 11; text: root.bassOn ? "ligado" : "desligado" }
+                               color: root.bassOn ? theme.purple : theme.fg; text: "󰋃" }
+                        Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Bass boost (EasyEffects)" }
+                        Text { color: root.bassOn ? theme.ok : theme.fgDim; font.pixelSize: 11; text: root.bassOn ? "ligado" : "desligado" }
                     }
                     MouseArea { id: bassMa2; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: root.toggleBassNew() }
@@ -2121,8 +2359,8 @@ ShellRoot {
             width:  att.geom.cols * att.geom.tw + (att.geom.cols - 1) * att.geom.gap + 2 * att.geom.pad
             height: att.geom.rows * att.geom.th + (att.geom.rows - 1) * att.geom.gap + 2 * att.geom.pad
             radius: 18
-            color: "#ee16161e"
-            border.color: "#33557aa2"; border.width: 1
+            color: Qt.alpha(theme.bgDark, 0.93)
+            border.color: Qt.alpha(theme.accent, 0.2); border.width: 1
             MouseArea { anchors.fill: parent }   // absorve cliques no card
             // scroll do mouse cicla a selecao
             WheelHandler { onWheel: function (e) { root.attStep(e.angleDelta.y < 0 ? 1 : -1); } }
@@ -2151,8 +2389,8 @@ ShellRoot {
                                 implicitWidth: att.geom.tw
                                 implicitHeight: att.geom.th
                                 radius: 12
-                                color: sel ? "#332f6aa8" : "#1f2235"
-                                border.color: sel ? "#7aa2f7" : "#2a2e44"
+                                color: sel ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                                border.color: sel ? theme.accent : theme.surface
                                 border.width: sel ? 3 : 1
                                 Behavior on border.color { ColorAnimation { duration: 90 } }
 
@@ -2179,7 +2417,7 @@ ShellRoot {
                                             }
                                         }
                                         Text {
-                                            color: thumb.sel ? "#c0caf5" : "#a9b1d6"
+                                            color: thumb.sel ? theme.fgBright : theme.fg
                                             font.pixelSize: 11; elide: Text.ElideRight
                                             Layout.maximumWidth: Math.max(40, thumb.width - 52)
                                             text: (thumb.modelData.title && thumb.modelData.title.length)

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Recarrega a barra Quickshell quando o tema do Omarchy muda.
+# Preferencia: IPC (re-le colors.toml SEM reiniciar -> a central nao fecha).
+# Fallback: restart do servico, caso o IPC nao responda.
+qs ipc call theme reload >/dev/null 2>&1 || systemctl --user restart qsbar
