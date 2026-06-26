@@ -3,20 +3,22 @@
 # Uso: taskbar-activate.sh <appId> [titulo]
 #   - sem titulo: opera no app inteiro (restaura 1 minimizada do app, senao foca/cicla).
 #   - com titulo: opera SO na janela daquele app+titulo (restaura se minimizada, senao foca).
-# Restaurar = tirar do special:minimized pro workspace de origem (store) e focar. Nunca usa
+# Restaurar = tirar do special:min-<addr> pro workspace de origem (store) e focar. Nunca usa
 # activate() cru (que traz o overlay especial e "trava" a tela).
 set -uo pipefail
 STORE="/tmp/minimized-windows"
-SPECIAL="special:minimized"
+# Minimizadas vivem cada uma no seu special "special:min-<addr>" (pra focar uma nao
+# revelar todas). Prefixo cobre o esquema novo e o antigo "special:minimized".
+SPECIAL_PREFIX="special:min"
 app="${1:-}"
 want_title="${2:-}"
 do_max=0; [ "${3:-}" = "max" ] && do_max=1   # 3o arg "max" = maximizar apos focar (alt+tab)
 [ -n "$app" ] || exit 0
 clients="$(hyprctl clients -j 2>/dev/null)"
 
-# poda o store: mantem so as janelas atualmente em special:minimized (sem fantasmas)
+# poda o store: mantem so as janelas atualmente minimizadas (em algum special:min*)
 if [ -s "$STORE" ]; then
-  mins_all="$(printf '%s' "$clients" | jq -r --arg w "$SPECIAL" '.[]|select(.workspace.name==$w)|.address')"
+  mins_all="$(printf '%s' "$clients" | jq -r --arg p "$SPECIAL_PREFIX" '.[]|select(.workspace.name|startswith($p))|.address')"
   ptmp="$(mktemp)"
   while read -r a w m; do
     [ -n "$a" ] || continue
@@ -32,8 +34,8 @@ sel='(.class==$a or .initialClass==$a)'
 mapfile -t app_addrs < <(printf '%s' "$clients" | jq -r --arg a "$app" --arg t "$want_title" ".[]|select($sel)|.address")
 [ "${#app_addrs[@]}" -gt 0 ] || exit 0
 
-mapfile -t minz < <(printf '%s' "$clients" | jq -r --arg a "$app" --arg t "$want_title" \
-  ".[]|select(($sel) and .workspace.name==\"$SPECIAL\")|.address")
+mapfile -t minz < <(printf '%s' "$clients" | jq -r --arg a "$app" --arg t "$want_title" --arg p "$SPECIAL_PREFIX" \
+  ".[]|select(($sel) and (.workspace.name|startswith(\$p)))|.address")
 
 restore_addr() {
   local target="$1" ws
