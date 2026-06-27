@@ -21,7 +21,8 @@ A waybar do Omarchy foi substituida por uma barra propria em Quickshell (QML).
   botoes Menu e Energia.
 - **Painel de Som** (`audio.sh`): volume master + seletor de dispositivo de SAIDA + mixer por app
   (agrupa streams do mesmo app, com icone) + secao MICROFONE (volume + seletor de mic) + toggle de
-  Bass boost (EasyEffects on-demand). Modelo "estilo Windows".
+  Bass boost (EasyEffects on-demand) + Espelhar saida em varios dispositivos ao mesmo tempo
+  (combine-sink; incompativel com o Bass boost, que e desligado ao espelhar). Modelo "estilo Windows".
 - **Previewer de wallpaper** (`wallpaper-engine`, pasta 08): grade de miniaturas, marca o ativo.
 - Barra ~85% opaca.
 

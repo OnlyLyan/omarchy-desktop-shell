@@ -390,8 +390,11 @@ ShellRoot {
     }
     function refreshVol() { volProc.running = true; }
     // poll so enquanto a central esta aberta
+    // (inclui sinks/sources/mirror: fone que conecta com o painel aberto aparece sozinho)
     Timer { interval: 2000; running: root.acOpen; repeat: true; triggeredOnStart: true
-            onTriggered: { volProc.running = true; bassGetProc.running = true; } }
+            onTriggered: { volProc.running = true; bassGetProc.running = true;
+                           if (!root.volDragging) sinksProc.running = true;
+                           micSrcProc.running = true; mirrorGetProc.running = true; } }
     // throttle: aplica no maximo a cada 90ms o ultimo valor arrastado (1 processo, nao 1 por pixel)
     Timer {
         id: volApply; interval: 90; repeat: false
@@ -418,6 +421,8 @@ ShellRoot {
     property var audioSinks: []
     property var audioApps: []
     property bool bassOn: false
+    property bool mirrorMode: false   // toggle "Espelhar": lista vira multi-selecao
+    property var mirrorSel: []         // names dos dispositivos marcados pro espelho
     Process {
         id: sinksProc
         command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sinks"]
@@ -446,6 +451,14 @@ ShellRoot {
         id: bassGetProc
         command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-get"]
         stdout: StdioCollector { onStreamFinished: root.bassOn = (this.text.trim() === "1") }
+    }
+    Process {
+        id: mirrorGetProc
+        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-get"]
+        stdout: StdioCollector { onStreamFinished: {
+            var s = this.text.trim();
+            if (s.length > 0) { root.mirrorMode = true; root.mirrorSel = s.split(","); }
+        } }
     }
 
     // ---- microfone (entrada): mesmo modelo do output ----
@@ -481,10 +494,46 @@ ShellRoot {
                               for (var i = 0; i < micSources.length; i++) micSources[i].active = (micSources[i].name === name);
                               micSources = micSources.slice(); audioRefresh.restart(); }
 
-    function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; root.refreshVol(); root.refreshMic(); }
+    function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; mirrorGetProc.running = true; root.refreshVol(); root.refreshMic(); }
     function setOutput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", name]);
                                for (var i = 0; i < audioSinks.length; i++) audioSinks[i].active = (audioSinks[i].name === name);
                                audioSinks = audioSinks.slice(); audioRefresh.restart(); }
+    // ---- espelho: tocar em varios dispositivos ao mesmo tempo (combine-sink) ----
+    function mirrorHas(name) { return root.mirrorSel.indexOf(name) >= 0; }
+    function toggleMirrorMode() {
+        root.mirrorMode = !root.mirrorMode;
+        if (root.mirrorMode) {
+            // entra no modo espelho: semeia a selecao com o dispositivo ativo atual
+            if (root.mirrorSel.length === 0) {
+                var sel = [];
+                for (var i = 0; i < audioSinks.length; i++) if (audioSinks[i].active) sel.push(audioSinks[i].name);
+                root.mirrorSel = sel;
+            }
+        } else {
+            // sai do modo espelho: desfaz o combine, volta pro 1o dispositivo
+            root.mirrorSel = [];
+            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+            audioRefresh.restart();
+        }
+    }
+    function toggleMirrorDev(name) {
+        var sel = root.mirrorSel.slice();
+        var idx = sel.indexOf(name);
+        if (idx >= 0) sel.splice(idx, 1); else sel.push(name);
+        root.mirrorSel = sel;
+        root.applyMirror();
+    }
+    function applyMirror() {
+        if (root.mirrorSel.length >= 2) {
+            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror", root.mirrorSel.join(",")]);
+            root.bassOn = false;   // bass e espelho nao convivem
+        } else if (root.mirrorSel.length === 1) {
+            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", root.mirrorSel[0]]);
+        } else {
+            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+        }
+        audioRefresh.restart();
+    }
     function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
                                 Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
     function toggleAppMute(id) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
@@ -1001,8 +1050,14 @@ ShellRoot {
                                 cursorShape: Qt.PointingHandCursor
                                 acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                                 onClicked: function (e) {
-                                    if (e.button === Qt.MiddleButton) modelData.secondaryActivate();
-                                    else modelData.activate();
+                                    if (e.button === Qt.MiddleButton) { modelData.secondaryActivate(); return; }
+                                    // Steam: activate() nao restaura a janela quando esta fechado
+                                    // pra bandeja. O steam:// abre a janela principal da instancia ativa.
+                                    var id = ("" + (modelData.id || "") + (modelData.title || "")).toLowerCase();
+                                    if (id.indexOf("steam") !== -1)
+                                        Quickshell.execDetached(["steam", "steam://open/main"]);
+                                    else
+                                        modelData.activate();
                                 }
                             }
                         }
@@ -2157,28 +2212,54 @@ ShellRoot {
                            font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
                 }
 
-                // saida: escolher o dispositivo (igual Windows)
-                Text { text: "Saída"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+                // saida: escolher o dispositivo (igual Windows) | espelhar = tocar em varios
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Text { Layout.fillWidth: true; text: "Saída"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+                    Text { text: "Espelhar"; font.pixelSize: 10; font.bold: root.mirrorMode
+                           color: root.mirrorMode ? theme.accent : theme.fgDim }
+                    // mini switch on/off
+                    Rectangle {
+                        implicitWidth: 26; implicitHeight: 14; radius: 7
+                        color: root.mirrorMode ? theme.accent : Qt.alpha(theme.fg, 0.2)
+                        Rectangle {
+                            width: 10; height: 10; radius: 5; color: theme.fgBright
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: root.mirrorMode ? parent.width - width - 2 : 2
+                            Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                        }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.toggleMirrorMode() }
+                    }
+                }
+                Text { visible: root.mirrorMode; text: root.mirrorSel.length >= 2
+                            ? ("Tocando em " + root.mirrorSel.length + " dispositivos")
+                            : "Marque 2 ou mais dispositivos"
+                       color: theme.fgDim; font.pixelSize: 10 }
                 Repeater {
                     model: root.audioSinks
                     delegate: Rectangle {
                         required property var modelData
+                        property bool checked: root.mirrorMode ? root.mirrorHas(modelData.name) : modelData.active
                         Layout.fillWidth: true
                         implicitHeight: 34; radius: 8
-                        color: modelData.active ? Qt.alpha(theme.accent, 0.2) : (sinkMa.containsMouse ? Qt.alpha(theme.accent, 0.12) : "transparent")
+                        color: checked ? Qt.alpha(theme.accent, 0.2) : (sinkMa.containsMouse ? Qt.alpha(theme.accent, 0.12) : "transparent")
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                            // no modo espelho mostra checkbox; senao o icone do dispositivo
                             Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                                   color: modelData.active ? theme.accent : theme.fg
-                                   text: modelData.icon === "headphones" ? "󰋋" : (modelData.icon === "tv" ? "󰔂" : (modelData.icon === "usb" ? "󰕓" : "󰓃")) }
+                                   color: checked ? theme.accent : theme.fg
+                                   text: root.mirrorMode
+                                         ? (checked ? "󰄲" : "󰄱")
+                                         : (modelData.icon === "headphones" ? "󰋋" : (modelData.icon === "tv" ? "󰔂" : (modelData.icon === "usb" ? "󰕓" : "󰓃"))) }
                             Text { Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
                                    elide: Text.ElideRight; text: modelData.desc }
-                            Text { visible: modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
+                            Text { visible: !root.mirrorMode && modelData.active; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"
                                    font.pixelSize: 13; color: theme.ok }
                         }
                         MouseArea {
                             id: sinkMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setOutput(modelData.name)
+                            onClicked: root.mirrorMode ? root.toggleMirrorDev(modelData.name) : root.setOutput(modelData.name)
                         }
                     }
                 }
@@ -2272,18 +2353,23 @@ ShellRoot {
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
                 // bass boost: liga o EasyEffects sob demanda, roteado pro dispositivo atual
+                // (indisponivel enquanto espelha em varios: combine-sink e EE nao convivem)
                 Rectangle {
+                    id: bassRow
+                    property bool blocked: root.mirrorMode && root.mirrorSel.length >= 2
                     Layout.fillWidth: true; implicitHeight: 36; radius: 8
-                    color: root.bassOn ? Qt.alpha(theme.purple, 0.2) : (bassMa2.containsMouse ? Qt.alpha(theme.purple, 0.12) : "transparent")
+                    opacity: blocked ? 0.45 : 1
+                    color: (!blocked && root.bassOn) ? Qt.alpha(theme.purple, 0.2) : (bassMa2.containsMouse && !blocked ? Qt.alpha(theme.purple, 0.12) : "transparent")
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                         Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                               color: root.bassOn ? theme.purple : theme.fg; text: "󰋃" }
+                               color: (!bassRow.blocked && root.bassOn) ? theme.purple : theme.fg; text: "󰋃" }
                         Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Bass boost (EasyEffects)" }
-                        Text { color: root.bassOn ? theme.ok : theme.fgDim; font.pixelSize: 11; text: root.bassOn ? "ligado" : "desligado" }
+                        Text { color: bassRow.blocked ? theme.fgDim : (root.bassOn ? theme.ok : theme.fgDim); font.pixelSize: 11
+                               text: bassRow.blocked ? "indisponível" : (root.bassOn ? "ligado" : "desligado") }
                     }
                     MouseArea { id: bassMa2; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.toggleBassNew() }
+                                onClicked: { if (!bassRow.blocked) root.toggleBassNew() } }
                 }
             }
         }

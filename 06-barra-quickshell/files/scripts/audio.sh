@@ -15,10 +15,15 @@
 #   audio.sh app-mute <id>
 #   audio.sh bass-get            -> 0|1
 #   audio.sh bass-toggle
+#   audio.sh mirror <csv>        -> espelha a saida em varios dispositivos (combine-sink)
+#   audio.sh mirror-off          -> desfaz o espelho, volta pro 1o dispositivo
+#   audio.sh mirror-get          -> csv dos dispositivos espelhados (vazio se off)
 set -uo pipefail
 
 STATE_DIR="$HOME/.local/state/audio"; mkdir -p "$STATE_DIR"
 BASS_DEV_FILE="$STATE_DIR/bass-device"
+COMBINE_NAME="qsbar_combine"
+COMBINE_SLAVES_FILE="$STATE_DIR/combine-slaves"
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # move todos os sink-inputs (apps) para o sink $1
@@ -27,14 +32,24 @@ move_all() {
   for s in $(pactl list short sink-inputs | awk '{print $1}'); do
     pactl move-sink-input "$s" "$1" 2>/dev/null
   done
+  return 0
 }
 
-# primeiro device real (nao-easyeffects); prefere o atual default, senao bluez, senao primeiro
+# descarrega qualquer combine-sink nosso (modo espelho), por id robusto (varre os modules)
+mirror_unload() {
+  local m
+  for m in $(pactl list modules short 2>/dev/null | awk -v n="$COMBINE_NAME" '/module-combine-sink/ && $0 ~ n {print $1}'); do
+    pactl unload-module "$m" 2>/dev/null
+  done
+  rm -f "$COMBINE_SLAVES_FILE"
+}
+
+# primeiro device real (nao-easyeffects, nao-combine); prefere o atual default, senao bluez, senao primeiro
 real_default() {
   local d; d="$(pactl get-default-sink 2>/dev/null)"
-  [ -n "$d" ] && [ "$d" != easyeffects_sink ] && { echo "$d"; return; }
+  [ -n "$d" ] && [ "$d" != easyeffects_sink ] && [ "$d" != "$COMBINE_NAME" ] && { echo "$d"; return; }
   pactl list short sinks | awk '$2 ~ /bluez/{print $2; exit}' && return
-  pactl list short sinks | awk '$2!="easyeffects_sink"{print $2; exit}'
+  pactl list short sinks | awk -v n="$COMBINE_NAME" '$2!="easyeffects_sink" && $2!=n{print $2; exit}'
 }
 
 # liga (ou re-roteia) o bass boost apontando a saida do EE pro device $1.
@@ -72,11 +87,11 @@ case "${1:-get}" in
     ;;
   sinks)
     def="$(pactl get-default-sink 2>/dev/null)"
-    pactl list sinks 2>/dev/null | awk -v def="$def" '
+    pactl list sinks 2>/dev/null | awk -v def="$def" -v comb="$COMBINE_NAME" '
       /^[[:space:]]*Name:/ { name=$2 }
       /^[[:space:]]*Description:/ {
         d=$0; sub(/^[[:space:]]*Description:[[:space:]]*/,"",d)
-        if (name!="easyeffects_sink") {
+        if (name!="easyeffects_sink" && name!=comb) {
           icon="speaker"
           if (name ~ /bluez/) icon="headphones"
           else if (name ~ /hdmi/) icon="tv"
@@ -88,6 +103,7 @@ case "${1:-get}" in
   output)
     dev="${2:-}"; [ -n "$dev" ] || exit 1
     pactl list short sinks | grep -Fq "$dev" || { echo "audio.sh: sink inexistente: $dev" >&2; exit 1; }
+    mirror_unload   # escolher um dispositivo unico desfaz o espelho
     if pgrep -x easyeffects >/dev/null 2>&1; then
       # bass ligado: troca o device POR BAIXO do EE (mantem o bass), nao deixa caminho morto
       bass_up "$dev"
@@ -194,12 +210,41 @@ case "${1:-get}" in
       pactl set-default-sink "$dev"
       move_all "$dev"
     else
-      # LIGA: roteia o bass pro device atual (helper reinicia o EE com o device certo)
+      # LIGA: bass e espelho sao incompativeis -> desfaz o espelho antes
+      mirror_unload
       bass_up "$(real_default)"
     fi
     ;;
+  mirror)
+    # espelha a saida em varios dispositivos via combine-sink (slaves = csv de names)
+    slaves="${2:-}"; [ -n "$slaves" ] || { echo "audio.sh: mirror precisa de slaves" >&2; exit 1; }
+    # bass e espelho nao convivem: desliga o EE se estiver no caminho
+    pgrep -x easyeffects >/dev/null 2>&1 && { pkill -x easyeffects 2>/dev/null; sleep 0.4; }
+    mirror_unload   # limpa combine anterior
+    mod="$(pactl load-module module-combine-sink \
+            sink_name="$COMBINE_NAME" slaves="$slaves" \
+            sink_properties=device.description="Espelhado_(varios)" 2>/dev/null)"
+    case "$mod" in ''|*[!0-9]*) echo "audio.sh: falha ao criar combine-sink" >&2; exit 1;; esac
+    echo "$slaves" > "$COMBINE_SLAVES_FILE"
+    for i in $(seq 1 25); do pactl list short sinks | grep -Fq "$COMBINE_NAME" && break; sleep 0.2; done
+    pactl set-default-sink "$COMBINE_NAME"
+    move_all "$COMBINE_NAME"
+    ;;
+  mirror-off)
+    first="$(cut -d, -f1 "$COMBINE_SLAVES_FILE" 2>/dev/null)"
+    mirror_unload
+    { [ -n "$first" ] && pactl list short sinks | grep -Fq "$first"; } || first="$(real_default)"
+    pactl set-default-sink "$first"
+    move_all "$first"
+    ;;
+  mirror-get)
+    # csv dos dispositivos espelhados, so se o combine ainda existe de fato
+    if pactl list short sinks | grep -Fq "$COMBINE_NAME"; then
+      cat "$COMBINE_SLAVES_FILE" 2>/dev/null
+    fi
+    ;;
   *)
-    echo "uso: audio.sh {get|set|toggle|sinks|output|apps|app-vol|app-mute|bass-get|bass-toggle|mic-get|mic-set|mic-toggle|sources|input|mic-apps|mic-app-vol|mic-app-mute}" >&2
+    echo "uso: audio.sh {get|set|toggle|sinks|output|apps|app-vol|app-mute|bass-get|bass-toggle|mirror|mirror-off|mirror-get|mic-get|mic-set|mic-toggle|sources|input|mic-apps|mic-app-vol|mic-app-mute}" >&2
     exit 1
     ;;
 esac
