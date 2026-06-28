@@ -2676,6 +2676,11 @@ ShellRoot {
                 anchors { left: parent.left; right: parent.right; top: parent.top }
                 anchors.margins: 14
                 spacing: 10
+                // estado do menu de contexto de saida por app (botao direito)
+                property string appMenuFor: ""
+                property real appMenuX: 0
+                property real appMenuY: 0
+                property var appMenuData: ({})
 
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
@@ -2773,35 +2778,66 @@ ShellRoot {
                 Text { visible: root.audioApps.length === 0; text: "Nenhum app tocando agora."; color: theme.fgDim; font.pixelSize: 11 }
                 Repeater {
                     model: root.audioApps
-                    delegate: RowLayout {
+                    delegate: Rectangle {
                         id: appRow
                         required property var modelData
                         property real av: modelData.vol
-                        Layout.fillWidth: true; spacing: 8
-                        // icone do app (identifica + clique muta; vermelho quando mudo)
-                        Text { text: root.appIcon(appRow.modelData.name); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                               color: appRow.modelData.mut ? theme.danger : theme.accent; opacity: appRow.modelData.mut ? 0.7 : 1
-                               Layout.preferredWidth: 20; horizontalAlignment: Text.AlignHCenter
-                               MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleAppMute(appRow.modelData.id) } }
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: 2
-                            Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 11; elide: Text.ElideRight; text: appRow.modelData.name }
-                            Item {
-                                Layout.fillWidth: true; implicitHeight: 14
-                                Rectangle {
-                                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
-                                    height: 5; radius: 3; color: theme.surface
-                                    Rectangle { width: parent.width * Math.min(1, appRow.av); height: parent.height; radius: 3; color: theme.purple }
-                                }
-                                MouseArea {
-                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                    onPressed: function (e) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); }
-                                    onPositionChanged: function (e) { if (pressed) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); } }
+                        // app roteado pra um device real diferente do padrao
+                        property var curSink: root.sinkByName(modelData.outSink)
+                        property bool routed: curSink !== null && root.defaultSinkName() !== ""
+                                              && modelData.outSink !== root.defaultSinkName()
+                        Layout.fillWidth: true
+                        implicitHeight: 42; radius: 8
+                        color: routed ? Qt.alpha(theme.accent, 0.10)
+                                      : (appRowMa.containsMouse ? Qt.alpha(theme.accent, 0.06) : "transparent")
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 8
+                            // icone do app (identifica + clique muta; vermelho quando mudo)
+                            Text { text: root.appIcon(appRow.modelData.name); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
+                                   color: appRow.modelData.mut ? theme.danger : theme.accent; opacity: appRow.modelData.mut ? 0.7 : 1
+                                   Layout.preferredWidth: 20; horizontalAlignment: Text.AlignHCenter
+                                   MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleAppMute(appRow.modelData.id) } }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 2
+                                Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 11; elide: Text.ElideRight; text: appRow.modelData.name }
+                                Item {
+                                    Layout.fillWidth: true; implicitHeight: 14
+                                    Rectangle {
+                                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                        height: 5; radius: 3; color: theme.surface
+                                        Rectangle { width: parent.width * Math.min(1, appRow.av); height: parent.height; radius: 3; color: theme.purple }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onPressed: function (e) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); }
+                                        onPositionChanged: function (e) { if (pressed) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); } }
+                                    }
                                 }
                             }
+                            Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: theme.fgDim
+                                   font.pixelSize: 10; horizontalAlignment: Text.AlignRight }
+                            // icone do device de saida atual (so quando esta num device real)
+                            Text {
+                                visible: appRow.curSink !== null
+                                text: appRow.curSink ? root.sinkGlyph(appRow.curSink.icon) : ""
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                                color: appRow.routed ? theme.accent : theme.fgDim
+                                Layout.preferredWidth: 18; horizontalAlignment: Text.AlignHCenter
+                            }
                         }
-                        Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: theme.fgDim
-                               font.pixelSize: 10; horizontalAlignment: Text.AlignRight }
+                        // botao direito -> menu de escolha de saida (so RightButton: clique esquerdo cai pro slider/icone abaixo)
+                        MouseArea {
+                            id: appRowMa; anchors.fill: parent; hoverEnabled: true
+                            acceptedButtons: Qt.RightButton; cursorShape: Qt.ArrowCursor
+                            onClicked: function (e) {
+                                var pt = appRow.mapToItem(card, e.x, e.y);
+                                audioCol.appMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                audioCol.appMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                audioCol.appMenuData = { ids: appRow.modelData.id, name: appRow.modelData.name, outSink: appRow.modelData.outSink };
+                                audioCol.appMenuFor = appRow.modelData.id;
+                            }
+                        }
                     }
                 }
 
