@@ -2857,12 +2857,14 @@ ShellRoot {
                         property bool routed: curSink !== null && root.defaultSinkName() !== ""
                                               && modelData.outSink !== root.defaultSinkName()
                         Layout.fillWidth: true
-                        implicitHeight: 42; radius: 8
+                        implicitHeight: appContent.implicitHeight + 12; radius: 8
                         color: routed ? Qt.alpha(theme.accent, 0.10)
                                       : (appRowMa.containsMouse ? Qt.alpha(theme.accent, 0.06) : "transparent")
 
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 8
+                            id: appContent
+                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                            anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 8
                             // icone do app (identifica + clique muta; vermelho quando mudo)
                             Text { text: root.appIcon(appRow.modelData.name); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
                                    color: appRow.modelData.mut ? theme.danger : theme.accent; opacity: appRow.modelData.mut ? 0.7 : 1
@@ -2882,6 +2884,19 @@ ShellRoot {
                                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                         onPressed: function (e) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); }
                                         onPositionChanged: function (e) { if (pressed) { appRow.av = e.x / width; root.setAppVol(appRow.modelData.id, e.x / width); } }
+                                    }
+                                }
+                                // badge bem visivel quando o app esta mudo (chip vermelho, estilo do "conectado")
+                                Rectangle {
+                                    visible: appRow.modelData.mut
+                                    Layout.alignment: Qt.AlignLeft
+                                    Layout.topMargin: 1
+                                    implicitWidth: mutRow.implicitWidth + 12; implicitHeight: 16; radius: 8
+                                    color: Qt.alpha(theme.danger, 0.20)
+                                    RowLayout {
+                                        id: mutRow; anchors.centerIn: parent; spacing: 4
+                                        Text { text: "󰝟"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 10; color: theme.danger }
+                                        Text { text: "mutado"; font.pixelSize: 9; font.bold: true; color: theme.danger }
                                     }
                                 }
                             }
