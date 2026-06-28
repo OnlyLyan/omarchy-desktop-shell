@@ -1084,49 +1084,19 @@ ShellRoot {
                     anchors.centerIn: parent
                     spacing: ui.moduleSpacing
 
-                // ---- midia (mpris): icone + titulo/artista; some sem player ----
-                // wrapper Item: o MouseArea precisa de anchors.fill, proibido como filho
-                // direto de Row/RowLayout. O Item entra no rightRow via Layout.alignment.
-                Item {
-                    id: mediaModule
-                    Layout.alignment: Qt.AlignVCenter
+                // ---- player de midia: so um icone play/pause (titulo fica na central) ----
+                // clique esquerdo = play/pause; clique direito = abre a central com o player
+                Text {
                     visible: root.hasPlayer
-                    implicitWidth: mediaRow.implicitWidth
-                    implicitHeight: mediaRow.implicitHeight
-
-                    Row {
-                        id: mediaRow
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 6
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            font.family: "JetBrainsMono Nerd Font"
-                            font.pixelSize: 15
-                            color: theme.accent
-                            text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: Math.min(implicitWidth, 140)
-                            elide: Text.ElideRight
-                            color: theme.fg
-                            font.pixelSize: 12
-                            text: root.player
-                                  ? (root.player.trackTitle || "Sem titulo")
-                                    + (root.player.trackArtist ? "  |  " + root.player.trackArtist : "")
-                                  : ""
-                        }
-                    }
-
+                    Layout.alignment: Qt.AlignVCenter
+                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
+                    text: (root.player && root.player.playbackState === MprisPlaybackState.Playing) ? "󰏤" : "󰐊"
                     MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
                         onClicked: function (e) {
                             if (e.button === Qt.RightButton) { root.acScreen = bar.screen; root.acOpen = true; }
-                            else if (root.player && root.player.canTogglePlaying) root.player.togglePlaying();
+                            else if (root.player) root.player.togglePlaying();
                         }
                     }
                 }
