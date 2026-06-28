@@ -1109,7 +1109,7 @@ ShellRoot {
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            width: Math.min(implicitWidth, 200)
+                            width: Math.min(implicitWidth, 140)
                             elide: Text.ElideRight
                             color: theme.fg
                             font.pixelSize: 12
