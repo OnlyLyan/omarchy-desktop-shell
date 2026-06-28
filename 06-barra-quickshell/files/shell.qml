@@ -465,7 +465,7 @@ ShellRoot {
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
                 var p = lines[i].split("|");
                 arr.push({ id: p[0], mut: p[1] === "1", vol: (parseInt(p[2]) || 0) / 100,
-                           name: p.slice(3).join("|") || ("app " + p[0]) }); }
+                           outSink: p[3] || "", name: p.slice(4).join("|") || ("app " + p[0]) }); }
             root.audioApps = arr;
         } }
     }
@@ -561,6 +561,25 @@ ShellRoot {
     }
     function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
                                 Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
+    // redireciona saida do app para o sink indicado e reavalia
+    function setAppOutput(ids, sink) {
+        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-output", "" + ids, sink]);
+        audioRefresh.restart();
+    }
+    // retorna objeto de audioSinks com name igual ao informado, ou null
+    function sinkByName(name) {
+        for (var i = 0; i < audioSinks.length; i++) if (audioSinks[i].name === name) return audioSinks[i];
+        return null;
+    }
+    // retorna o name do sink ativo (active === true), ou string vazia
+    function defaultSinkName() {
+        for (var i = 0; i < audioSinks.length; i++) if (audioSinks[i].active) return audioSinks[i].name;
+        return "";
+    }
+    // glyph nerdfont por tipo de dispositivo (headphones/tv/usb/speaker)
+    function sinkGlyph(icon) {
+        return icon === "headphones" ? "󰋋" : (icon === "tv" ? "󰔂" : (icon === "usb" ? "󰕓" : "󰓃"));
+    }
     function toggleAppMute(id) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
     // glyph por app (nerd font) pra identificar quem ta tocando no mixer
     function appIcon(name) {
