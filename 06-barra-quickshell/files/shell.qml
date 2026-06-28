@@ -584,6 +584,7 @@ ShellRoot {
     // glyph por app (nerd font) pra identificar quem ta tocando no mixer
     function appIcon(name) {
         var n = (name || "").toLowerCase();
+        if (n.indexOf("papel de parede") >= 0) return "󰸉";
         if (n.indexOf("brave") >= 0) return "󰖟";
         if (n.indexOf("firefox") >= 0) return "󰈹";
         if (n.indexOf("chrom") >= 0) return "󰊯";
