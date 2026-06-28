@@ -747,7 +747,8 @@ ShellRoot {
             anchors { bottom: true; left: true; right: true }
             // ilhas flutuantes: janela ocupa a faixa toda mas e transparente
             implicitHeight: ui.islandHeight + ui.barMargin * 2
-            exclusiveZone: ui.islandHeight + ui.barMargin
+            // reserva a ilha + vao em cima E embaixo (barra totalmente solta; janelas nao encostam no topo da barra)
+            exclusiveZone: ui.islandHeight + ui.barMargin * 2
             color: "transparent"
 
             // mask de input: so as 3 ilhas recebem clique; os vaos transparentes
