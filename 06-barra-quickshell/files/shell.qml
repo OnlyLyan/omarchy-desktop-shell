@@ -26,7 +26,7 @@ ShellRoot {
         id: ui
         readonly property int islandRadius: 16     // raio dos cantos da ilha
         readonly property int islandHeight: 32     // altura interna da ilha
-        readonly property int barMargin: 8         // respiro das bordas da tela
+        readonly property int barMargin: 4         // respiro das bordas da tela (barra mais baixa)
         readonly property int islandPadH: 13       // padding horizontal interno
         readonly property int moduleSpacing: 10    // espaco entre modulos dentro da ilha
         readonly property real islandOpacity: 0.92 // opacidade do fundo da ilha
@@ -1372,12 +1372,13 @@ ShellRoot {
                              : (view === "bt" ? btCol.implicitHeight
                              : (view === "notif" ? notifCol.implicitHeight
                              : (view === "wall" ? wallCol.implicitHeight
-                             : (view === "audio" ? audioCol.implicitHeight : acCol.implicitHeight))))) + 28
+                             : (view === "audio" ? audioCol.implicitHeight
+                             : (view === "perso" ? persoCol.implicitHeight : acCol.implicitHeight)))))) + 28
             height: implicitHeight
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.rightMargin: 8
-            anchors.bottomMargin: 46
+            anchors.bottomMargin: ui.islandHeight + ui.barMargin * 2 + 6
             radius: 16
             color: theme.bg
             border.color: Qt.alpha(theme.accent, 0.2)
