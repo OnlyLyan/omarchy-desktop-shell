@@ -6,7 +6,6 @@ import Quickshell.Wayland
 import Quickshell.Wayland._Screencopy
 import Quickshell.Io
 import Quickshell.Services.SystemTray
-import Quickshell.Services.Pipewire
 import Quickshell.Services.UPower
 import Quickshell.Bluetooth
 import Quickshell.Services.Mpris
@@ -18,6 +17,8 @@ ShellRoot {
     // estado global: central de acoes (dropdown estilo Windows) aberta?
     property bool acOpen: false
     property var acScreen: null   // monitor onde a central abre (o do chevron clicado)
+    property var wpaMonitors: []  // conectores onde o grafo aparece (vazio = todos)
+    property int wpaFps: 30
 
     // relogio do sistema
     SystemClock {
@@ -99,11 +100,6 @@ ShellRoot {
         function reload(): void { themeFile.reload(); theme.parse(themeFile.text()); }
     }
 
-    // mantem o sink de audio padrao "vivo" pra volume/mute atualizarem em tempo real
-    PwObjectTracker {
-        objects: Pipewire.defaultAudioSink ? [Pipewire.defaultAudioSink] : []
-    }
-
     // ---- estado de sistema (cpu/ram/rede) por polling ----
     QtObject {
         id: sys
@@ -138,19 +134,21 @@ ShellRoot {
         command: ["sh", "-c",
             "for i in /sys/class/net/*; do d=${i##*/}; [ \"$d\" = lo ] && continue; " +
             "[ \"$(cat $i/operstate 2>/dev/null)\" = up ] || continue; " +
-            "if [ -d \"$i/wireless\" ]; then q=$(awk -v dev=\"$d:\" '$1==dev{print int($3*100/70)}' /proc/net/wireless); " +
+            "if [ -d \"$i/wireless\" ]; then " +
             "s=$(iw dev \"$d\" link 2>/dev/null | sed -n 's/.*SSID: //p'); " +
-            "echo \"wifi:${q:-0}:${s:-Wi-Fi}\"; exit 0; else echo eth; exit 0; fi; done; echo off"]
+            "echo \"wifi:${s:-Wi-Fi}\"; exit 0; else echo eth; exit 0; fi; done; echo off"]
         stdout: StdioCollector { onStreamFinished: sys.net = this.text.trim() }
     }
     Timer { interval: 5000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: netProc.running = true }
 
-    // ---- lista de redes wifi (iwd) p/ o dropdown de conexao rapida ----
+    // ---- WiFi (iwd via wifi.sh): lista estavel + estado + acoes na barra ----
     property var wifiNets: []
+    property string wifiActive: ""    // "ssid|sig" ou ""
+    property bool wifiBusy: false
     Process {
         id: wifiListProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi-list.sh"]
+        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "list"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -158,57 +156,120 @@ ShellRoot {
                 for (var i = 0; i < lines.length; i++) {
                     if (!lines[i]) continue;
                     var p = lines[i].split("|");
+                    if (p.length < 5) continue;
                     arr.push({ conn: p[0] === "1", sig: parseInt(p[1]) || 0,
-                               name: p.slice(2).join("|") });
+                               sec: p[2], known: p[3] === "1",
+                               name: p.slice(4).join("|") });
                 }
-                root.wifiNets = arr;
+                if (arr.length > 0) root.wifiNets = arr;   // nunca zera com lista vazia
+                root.wifiBusy = false;
             }
         }
     }
-    function refreshWifi() { wifiListProc.running = true; }
-    function connectWifi(name) {
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/wifi-connect.sh", name]);
-    }
-
-    // ---- wallpapers baixados (Wallpaper Engine): lista dinamica via controlador ----
-    property var wallpapers: []
     Process {
-        id: wallListProc
-        command: ["/home/lucas/.local/bin/wallpaper-engine", "list"]
+        id: wifiStateProc
+        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "state"]
+        stdout: StdioCollector { onStreamFinished: root.wifiActive = this.text.trim() }
+    }
+    Process { id: wifiScanProc; command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "scan"] }
+    Process { id: wifiActProc }   // connect/disconnect/forget (command setado em wifiCmd)
+    function refreshWifi() { wifiListProc.running = true; wifiStateProc.running = true; }
+    function scanWifi() { wifiScanProc.running = true; root.wifiBusy = true; }
+    function wifiCmd(args) {
+        wifiActProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh"].concat(args);
+        wifiActProc.running = true;
+    }
+    property var wifiDetails: []
+    Process {
+        id: wifiDetailsProc
         stdout: StdioCollector {
             onStreamFinished: {
-                var lines = this.text.trim().split("\n");
                 var arr = [];
+                var lines = this.text.trim().split("\n");
                 for (var i = 0; i < lines.length; i++) {
                     if (!lines[i]) continue;
-                    // TSV: token \t kind(ok|web|app) \t audio(0/1) \t title \t preview
-                    var p = lines[i].split("\t");
-                    arr.push({ wid: p[0], kind: p[1] || "ok", audio: p[2] === "1",
-                               name: p[3] || p[0], preview: p[4] || "" });
+                    var p = lines[i].split("|");
+                    if (p.length < 2) continue;
+                    arr.push({ k: p[0], v: p.slice(1).join("|") });
                 }
-                root.wallpapers = arr;
+                root.wifiDetails = arr;
             }
         }
     }
-    // qual wallpaper esta ativo (pra marcar no previewer): le 'status' -> "running:<id>"
-    property string wallActive: ""
-    Process {
-        id: wallStatusProc
-        command: ["/home/lucas/.local/bin/wallpaper-engine", "status"]
-        stdout: StdioCollector { onStreamFinished: {
-            var s = this.text.trim();
-            root.wallActive = (s.indexOf("running:") === 0) ? s.slice(8) : "";
-        } }
+    function wifiFetchDetails(ssid) {
+        root.wifiDetails = [];
+        wifiDetailsProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh", "details", ssid];
+        wifiDetailsProc.running = true;
     }
-    function refreshWall() { wallListProc.running = true; wallStatusProc.running = true; }
-    function applyWall(id) { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "on", id]); root.wallActive = id; }
-    function browseWall() { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "browse"]); }
-    function offWall() { Quickshell.execDetached(["/home/lucas/.local/bin/wallpaper-engine", "off"]); }
-    function wallWarn(kind) {
-        var msg = kind === "web"
-            ? "Wallpaper tipo web nao roda nesta build (linux-wallpaperengine): costuma crashar."
-            : "Wallpaper tipo aplicativo (.exe) nao roda no Linux.";
-        Quickshell.execDetached(["notify-send", "-a", "Wallpaper", "Incompativel", msg]);
+
+    // ---- painel de wallpaper (grafo): busca Pinterest + ciclo do Omarchy ----
+    property var wpaSearchItems: []   // [{id, ext, w, h, in_cycle}]
+    property var wpaCycleItems: []    // [{file}]
+    property bool wpaBusy: false
+    readonly property string wpaApi: "http://127.0.0.1:8799"
+
+    function wpaPost(path, body, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                root.wpaBusy = false;
+                if (xhr.status === 200 && cb) {
+                    try { cb(JSON.parse(xhr.responseText)); } catch (e) {}
+                }
+            }
+        };
+        // try/catch: erro de rede nao deixa o indicador travado em "buscando"
+        try {
+            xhr.open("POST", root.wpaApi + path);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.send(JSON.stringify(body || {}));
+        } catch (e) { root.wpaBusy = false; }
+    }
+    function wpaGet(path, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200 && cb) {
+                try { cb(JSON.parse(xhr.responseText)); } catch (e) {}
+            }
+        };
+        xhr.open("GET", root.wpaApi + path); xhr.send();
+    }
+    function wpaSearch(vibe) {
+        root.wpaBusy = true; root.wpaSearchItems = [];
+        root.wpaPost("/api/search", { vibe: vibe, count: 12 }, function (r) {
+            root.wpaSearchItems = r.items || [];
+        });
+    }
+    function wpaAdd(ids) {
+        root.wpaPost("/api/add", { ids: ids }, function () { root.wpaLoadCycle(); });
+    }
+    function wpaLoadCycle() {
+        root.wpaGet("/api/cycle", function (r) { root.wpaCycleItems = r.items || []; });
+    }
+    function wpaRemove(files) {
+        root.wpaPost("/api/remove", { files: files }, function () { root.wpaLoadCycle(); });
+    }
+
+    // ---- backends do grafo de agentes (Claude Agents Wallpaper) ----
+    // O coletor varre ~/.claude/projects e serve graph.json (8787).
+    // O painel faz a busca de wallpaper (8799). Ambos vivem com o qsbar.
+    Process {
+        id: wpaCollector
+        command: ["python3", "/home/lucas/claude-agents-wallpaper/collector/serve.py"]
+        running: true
+    }
+    Process {
+        id: wpaPanelServer
+        command: ["python3", "/home/lucas/claude-agents-wallpaper/panel/panel_server.py"]
+        running: true
+    }
+
+    // grafo de agentes na camada Bottom (substitui o host GTK4+WebKit)
+    AgentGraph {
+        id: agentGraph
+        // config lida de ~/.config/wpa/config.json (Task 6); padrao: todos os monitores, 30fps
+        enabledMonitors: root.wpaMonitors
+        fps: root.wpaFps
     }
 
     // ---- temas Omarchy: lista (nome+fundo+accent) + tema atual ----
@@ -261,32 +322,6 @@ ShellRoot {
     function refreshThemes() { themesProc.running = true; curThemeProc.running = true; }
     function setTheme(snake) { Quickshell.execDetached(["omarchy-theme-set", snake]); root.currentTheme = snake; }
 
-    // ---- clima (omarchy-weather): poll raro, curl a wttr.in ----
-    QtObject {
-        id: weather
-        property string icon: ""
-        property string temp: ""
-        property string place: ""
-        property string wind: ""
-        property bool ok: false
-    }
-    Process {
-        id: weatherProc
-        command: ["/home/lucas/.config/quickshell/scripts/weather.sh"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                var p = this.text.trim().split("\t");
-                weather.icon = p[0] || "";
-                weather.temp = p[1] || "";
-                weather.place = p[2] || "";
-                weather.wind = p[3] || "";
-                weather.ok = (weather.icon !== "" || weather.temp !== "");
-            }
-        }
-    }
-    Timer { interval: 1200000; running: true; repeat: true; triggeredOnStart: true
-            onTriggered: weatherProc.running = true }   // 20 min
-
     // ---- update do Omarchy disponivel? (git ls-remote, poll raro) ----
     QtObject {
         id: omup
@@ -308,33 +343,6 @@ ShellRoot {
     }
     Timer { interval: 1800000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: omupProc.running = true }   // 30 min
-
-    // ---- voxtype (ditado): stream de estado JSON por linha ----
-    QtObject {
-        id: vox
-        property string state: ""   // idle | recording | transcribing | ...
-        property string tip: ""
-        property bool present: false
-    }
-    Process {
-        id: voxProc
-        command: ["sh", "-c",
-            "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; exec omarchy-voxtype-status"]
-        // DESATIVADO 2026-06-24: ditado por voz (voxtype) desligado a pedido do usuario.
-        // Com running:false o watcher nao sobe e o indicador "Voxtype pronto" some (vox.present
-        // fica false). Pra reativar: voltar running:true E `systemctl --user enable --now voxtype`.
-        running: false
-        stdout: SplitParser {
-            onRead: function (line) {
-                try {
-                    var o = JSON.parse(line);
-                    vox.state = o.class || o.alt || "";
-                    vox.tip = o.tooltip || "";
-                    vox.present = true;
-                } catch (e) {}
-            }
-        }
-    }
 
     // ============ toggles rapidos (bass boost / caffeine / nightlight / mic) ============
     QtObject {
@@ -458,6 +466,9 @@ ShellRoot {
         stdout: StdioCollector { onStreamFinished: {
             var s = this.text.trim();
             if (s.length > 0) { root.mirrorMode = true; root.mirrorSel = s.split(","); }
+            // espelho real (2+ dispositivos) sumiu por fora: reseta o estado.
+            // (nao mexe quando ha <2 selecionados: usuario ainda escolhendo no painel)
+            else if (root.mirrorSel.length >= 2) { root.mirrorMode = false; root.mirrorSel = []; }
         } }
     }
 
@@ -1234,14 +1245,18 @@ ShellRoot {
         id: ac
         // fica mapeada enquanto a animacao de fechar roda (ate o fade terminar)
         visible: root.acOpen || card.opacity > 0.01
-        onVisibleChanged: if (!visible) card.view = "main"   // sempre reabre na view principal
+        onVisibleChanged: if (!visible) { card.view = "main";   // sempre reabre na view principal
+                          if (Bluetooth.defaultAdapter) Bluetooth.defaultAdapter.discovering = false; }
         screen: root.acScreen ? root.acScreen : Quickshell.screens[0]
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.namespace: "qsbar-ac"
-        WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+        // OnDemand normal; Exclusive enquanto a linha de senha do wifi esta aberta
+        // (garante que a digitacao caia no campo no overlay layer-shell)
+        WlrLayershell.keyboardFocus: (card.view === "wifi" && wifiCol.wifiSel !== "")
+                                     ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.OnDemand
 
         // backdrop: clique fora do card fecha
         MouseArea { anchors.fill: parent; onClicked: root.acOpen = false }
@@ -1251,8 +1266,10 @@ ShellRoot {
             property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "perso" | "wall" | "audio"
             onViewChanged: { if (view === "wifi") root.refreshWifi();
                              else if (view === "notif") root.refreshNotifs();
-                             else if (view === "wall") root.refreshWall();
-                             else if (view === "audio") root.refreshAudio(); }
+                             else if (view === "wall") root.wpaLoadCycle();
+                             else if (view === "audio") root.refreshAudio();
+                             else if (view === "bt" && Bluetooth.defaultAdapter && Bluetooth.defaultAdapter.enabled)
+                                  Bluetooth.defaultAdapter.discovering = true; }
             // animacao de abrir/fechar: fade + leve slide de baixo pra cima
             opacity: root.acOpen ? 1 : 0
             property real slide: root.acOpen ? 0 : 14
@@ -1277,13 +1294,6 @@ ShellRoot {
 
             // absorve cliques no card pra nao fechar ao clicar em espaco vazio
             MouseArea { anchors.fill: parent }
-
-            property var sink: Pipewire.defaultAudioSink
-            property real vol: (sink && sink.audio) ? sink.audio.volume : 0
-            property bool mut: (sink && sink.audio) ? sink.audio.muted : false
-            function setVol(v) {
-                if (sink && sink.audio) sink.audio.volume = Math.max(0, Math.min(1, v));
-            }
 
             ColumnLayout {
                 id: acCol
@@ -1425,10 +1435,9 @@ ShellRoot {
                         ]
                         delegate: Rectangle {
                             required property var modelData
-                            property bool on: modelData.key === "bass" ? root.bassOn
-                                            : (modelData.key === "caf" ? tg.caffeine
+                            property bool on: modelData.key === "caf" ? tg.caffeine
                                             : (modelData.key === "night" ? tg.night
-                                            : !tg.micMuted))
+                                            : !tg.micMuted)
                             Layout.fillWidth: true
                             implicitHeight: 52; radius: 12
                             color: on ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
@@ -1450,8 +1459,7 @@ ShellRoot {
                             MouseArea {
                                 anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    if (modelData.key === "bass") root.toggleBassNew();
-                                    else if (modelData.key === "caf") root.toggleCaffeine();
+                                    if (modelData.key === "caf") root.toggleCaffeine();
                                     else if (modelData.key === "night") root.toggleNight();
                                     else root.toggleMic();
                                 }
@@ -1482,7 +1490,7 @@ ShellRoot {
                                 elide: Text.ElideRight
                                 Layout.maximumWidth: 120
                                 text: sys.net === "eth" ? "Cabo"
-                                      : (sys.net.indexOf("wifi") === 0 ? (sys.net.split(":").slice(2).join(":") || "Wi-Fi") : "Sem rede")
+                                      : (sys.net.indexOf("wifi") === 0 ? (sys.net.split(":").slice(1).join(":") || "Wi-Fi") : "Sem rede")
                             }
                         }
                         MouseArea {
@@ -1586,13 +1594,29 @@ ShellRoot {
                 }
             }
 
-            // ---- view: lista de redes wifi (conexao rapida) ----
+            // ---- view: lista de redes wifi (autossuficiente, iwd via wifi.sh) ----
             ColumnLayout {
                 id: wifiCol
                 visible: card.view === "wifi"
                 anchors { left: parent.left; right: parent.right; top: parent.top }
                 anchors.margins: 14
                 spacing: 8
+
+                property string wifiSel: ""    // ssid com a linha expandida (senha)
+                // menu de contexto (botao direito)
+                property string wifiMenuFor: ""
+                property real wifiMenuX: 0
+                property real wifiMenuY: 0
+                property var wifiMenuData: ({})
+                property bool wifiShowDetails: false
+
+                // poll nao-bloqueante enquanto a view esta aberta
+                Timer {
+                    interval: 3000; repeat: true
+                    running: card.view === "wifi" && root.acOpen
+                    onRunningChanged: if (running) { root.scanWifi(); root.refreshWifi(); }
+                    onTriggered: root.refreshWifi()
+                }
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -1602,48 +1626,124 @@ ShellRoot {
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { text: "Redes Wi-Fi"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                    ColumnLayout {
+                        spacing: 0
+                        Text { text: "Redes Wi-Fi"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                        Text {
+                            visible: root.wifiActive !== ""
+                            text: "conectado: " + root.wifiActive.split("|")[0]
+                            color: theme.ok; font.pixelSize: 10; elide: Text.ElideRight
+                        }
+                    }
                     Item { Layout.fillWidth: true }
                     Text {
-                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
+                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16
+                        color: root.wifiBusy ? theme.accent : theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.refreshWifi() }
+                                    onClicked: { root.scanWifi(); root.refreshWifi(); } }
                     }
                 }
 
                 Repeater {
                     model: root.wifiNets
                     delegate: Rectangle {
+                        id: netRow
                         required property var modelData
                         Layout.fillWidth: true
-                        implicitHeight: 36; radius: 8
+                        implicitHeight: rowCol.implicitHeight + 8; radius: 8
                         color: netRowMa.containsMouse ? Qt.alpha(theme.accent, 0.2)
                                : (modelData.conn ? Qt.alpha(theme.accent, 0.13) : "transparent")
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10; anchors.rightMargin: 10
-                            spacing: 8
-                            Text {
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
-                                text: modelData.sig >= 4 ? "󰤨" : (modelData.sig === 3 ? "󰤥"
-                                      : (modelData.sig === 2 ? "󰤢" : (modelData.sig >= 1 ? "󰤟" : "󰤯")))
-                            }
-                            Text {
+
+                        ColumnLayout {
+                            id: rowCol
+                            anchors { left: parent.left; right: parent.right; top: parent.top }
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 4
+                            spacing: 6
+
+                            // linha principal (clicavel)
+                            Item {
                                 Layout.fillWidth: true
-                                color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
-                                text: modelData.name
+                                implicitHeight: 28
+                                RowLayout {
+                                    anchors.fill: parent
+                                    spacing: 8
+                                    Text {
+                                        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
+                                        text: netRow.modelData.sig >= 4 ? "󰤨" : (netRow.modelData.sig === 3 ? "󰤥"
+                                              : (netRow.modelData.sig === 2 ? "󰤢" : (netRow.modelData.sig >= 1 ? "󰤟" : "󰤯")))
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
+                                        text: netRow.modelData.name
+                                    }
+                                    Text {
+                                        visible: netRow.modelData.sec !== "open"
+                                        text: "󰌾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11; color: theme.fgDim
+                                    }
+                                    Text {
+                                        visible: netRow.modelData.conn
+                                        color: theme.ok; font.pixelSize: 10
+                                        text: "conectado"
+                                    }
+                                }
+                                MouseArea {
+                                    id: netRowMa
+                                    anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: function (mouse) {
+                                        if (mouse.button === Qt.RightButton) {
+                                            var pt = netRowMa.mapToItem(card, mouse.x, mouse.y);
+                                            wifiCol.wifiMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                            wifiCol.wifiMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                            wifiCol.wifiMenuData = { conn: netRow.modelData.conn, known: netRow.modelData.known,
+                                                                     sec: netRow.modelData.sec, name: netRow.modelData.name };
+                                            wifiCol.wifiShowDetails = false;
+                                            wifiCol.wifiMenuFor = netRow.modelData.name;
+                                            return;
+                                        }
+                                        // esquerda: conecta direto (ou abre senha em rede nova protegida)
+                                        if (netRow.modelData.conn) return;
+                                        if (netRow.modelData.known || netRow.modelData.sec === "open")
+                                            root.wifiCmd(["connect", netRow.modelData.name]);
+                                        else
+                                            wifiCol.wifiSel = (wifiCol.wifiSel === netRow.modelData.name ? "" : netRow.modelData.name);
+                                    }
+                                }
                             }
-                            Text {
-                                visible: modelData.conn
-                                color: theme.ok; font.pixelSize: 10
-                                text: "conectado"
+
+                            // expansao: senha (rede nova protegida) OU acoes (conectada/conhecida)
+                            ColumnLayout {
+                                visible: wifiCol.wifiSel === netRow.modelData.name
+                                Layout.fillWidth: true; spacing: 6
+
+                                RowLayout {
+                                    visible: !netRow.modelData.conn && !netRow.modelData.known && netRow.modelData.sec !== "open"
+                                    Layout.fillWidth: true; spacing: 6
+                                    Rectangle {
+                                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                                        color: theme.bgAlt; border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
+                                        TextInput {
+                                            id: pwInput
+                                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                                            verticalAlignment: TextInput.AlignVCenter
+                                            color: theme.fg; font.pixelSize: 12
+                                            echoMode: TextInput.Password; clip: true
+                                            focus: wifiCol.wifiSel === netRow.modelData.name
+                                            onVisibleChanged: if (visible) forceActiveFocus()
+                                            onAccepted: { root.wifiCmd(["connect", netRow.modelData.name, text]); wifiCol.wifiSel = ""; }
+                                        }
+                                    }
+                                    Rectangle {
+                                        implicitWidth: 76; implicitHeight: 30; radius: 6; color: theme.accent
+                                        Text { anchors.centerIn: parent; text: "Conectar"; color: theme.bg; font.pixelSize: 11; font.bold: true }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                            onClicked: { root.wifiCmd(["connect", netRow.modelData.name, pwInput.text]); wifiCol.wifiSel = ""; } }
+                                    }
+                                }
+
                             }
-                        }
-                        MouseArea {
-                            id: netRowMa
-                            anchors.fill: parent; hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.connectWifi(modelData.name)
                         }
                     }
                 }
@@ -1657,6 +1757,219 @@ ShellRoot {
                 }
             }
 
+            // ---- menu de contexto do wifi (botao direito) ----
+            MouseArea {
+                visible: card.view === "wifi" && wifiCol.wifiMenuFor !== ""
+                anchors.fill: parent; z: 99
+                acceptedButtons: Qt.AllButtons
+                onClicked: { wifiCol.wifiMenuFor = ""; wifiCol.wifiShowDetails = false; }
+            }
+            Rectangle {
+                id: wifiMenu
+                visible: card.view === "wifi" && wifiCol.wifiMenuFor !== ""
+                z: 100
+                x: wifiCol.wifiMenuX; y: wifiCol.wifiMenuY
+                width: 178
+                implicitHeight: wifiMenuCol.implicitHeight + 12
+                height: implicitHeight
+                radius: 10
+                color: theme.bgAlt
+                border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
+
+                ColumnLayout {
+                    id: wifiMenuCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                    anchors.margins: 6
+                    spacing: 2
+
+                    Text {
+                        Layout.fillWidth: true; Layout.margins: 4
+                        text: wifiCol.wifiMenuData.name || ""
+                        color: theme.fgBright; font.pixelSize: 11; font.bold: true; elide: Text.ElideRight
+                    }
+
+                    // Conectar (nao conectada)
+                    Rectangle {
+                        visible: !wifiCol.wifiShowDetails && !wifiCol.wifiMenuData.conn
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: cMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Conectar"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: cMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var d = wifiCol.wifiMenuData;
+                                if (!d.known && d.sec !== "open") wifiCol.wifiSel = d.name;   // abre senha inline
+                                else root.wifiCmd(["connect", d.name]);
+                                wifiCol.wifiMenuFor = "";
+                            } }
+                    }
+                    // Desconectar (conectada)
+                    Rectangle {
+                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.conn
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: dMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Desconectar"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: dMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { root.wifiCmd(["disconnect"]); wifiCol.wifiMenuFor = ""; } }
+                    }
+                    // Esquecer (conhecida)
+                    Rectangle {
+                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.known
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: fMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Esquecer"; color: theme.warn; font.pixelSize: 12 }
+                        MouseArea { id: fMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { root.wifiCmd(["forget", wifiCol.wifiMenuData.name]); wifiCol.wifiMenuFor = ""; } }
+                    }
+                    // Detalhes
+                    Rectangle {
+                        visible: !wifiCol.wifiShowDetails
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: deMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Detalhes"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: deMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { root.wifiFetchDetails(wifiCol.wifiMenuData.name); wifiCol.wifiShowDetails = true; } }
+                    }
+
+                    // lista de detalhes
+                    Repeater {
+                        model: wifiCol.wifiShowDetails ? root.wifiDetails : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true; Layout.leftMargin: 4; Layout.rightMargin: 4; spacing: 6
+                            Text { text: modelData.k; color: theme.fgDim; font.pixelSize: 10 }
+                            Item { Layout.fillWidth: true }
+                            Text { text: modelData.v; color: theme.fg; font.pixelSize: 10; elide: Text.ElideRight }
+                        }
+                    }
+                    Text {
+                        visible: wifiCol.wifiShowDetails && root.wifiDetails.length === 0
+                        Layout.fillWidth: true; Layout.margins: 4
+                        text: "carregando…"; color: theme.fgDim; font.pixelSize: 10
+                    }
+                }
+            }
+
+            // ---- menu de contexto do bluetooth (botao direito) ----
+            MouseArea {
+                visible: card.view === "bt" && btCol.btMenuFor !== ""
+                anchors.fill: parent; z: 99
+                acceptedButtons: Qt.AllButtons
+                onClicked: { btCol.btMenuFor = ""; btCol.btShowDetails = false; }
+            }
+            Rectangle {
+                id: btMenu
+                visible: card.view === "bt" && btCol.btMenuFor !== "" && btCol.btMenuDev
+                z: 100
+                x: btCol.btMenuX; y: btCol.btMenuY
+                width: 178
+                implicitHeight: btMenuCol.implicitHeight + 12
+                height: implicitHeight
+                radius: 10
+                color: theme.bgAlt
+                border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
+
+                ColumnLayout {
+                    id: btMenuCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                    anchors.margins: 6
+                    spacing: 2
+
+                    Text {
+                        Layout.fillWidth: true; Layout.margins: 4
+                        text: btCol.btMenuDev ? (btCol.btMenuDev.deviceName || btCol.btMenuDev.name || btCol.btMenuDev.address) : ""
+                        color: theme.fgBright; font.pixelSize: 11; font.bold: true; elide: Text.ElideRight
+                    }
+
+                    // Conectar (pareado, desconectado)
+                    Rectangle {
+                        visible: !btCol.btShowDetails && btCol.btMenuDev
+                                 && (btCol.btMenuDev.paired || btCol.btMenuDev.bonded) && !btCol.btMenuDev.connected
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: btcMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Conectar"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: btcMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { btCol.btMenuDev.connect(); btCol.btMenuFor = ""; } }
+                    }
+                    // Desconectar (conectado)
+                    Rectangle {
+                        visible: !btCol.btShowDetails && btCol.btMenuDev && btCol.btMenuDev.connected
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: btdMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Desconectar"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: btdMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { btCol.btMenuDev.disconnect(); btCol.btMenuFor = ""; } }
+                    }
+                    // Parear (nao pareado)
+                    Rectangle {
+                        visible: !btCol.btShowDetails && btCol.btMenuDev
+                                 && !(btCol.btMenuDev.paired || btCol.btMenuDev.bonded)
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: btpMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Parear"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: btpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { btCol.btMenuDev.pair(); btCol.btMenuFor = ""; } }
+                    }
+                    // Esquecer (pareado)
+                    Rectangle {
+                        visible: !btCol.btShowDetails && btCol.btMenuDev
+                                 && (btCol.btMenuDev.paired || btCol.btMenuDev.bonded)
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: btfMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Esquecer"; color: theme.warn; font.pixelSize: 12 }
+                        MouseArea { id: btfMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { btCol.btMenuDev.forget(); btCol.btMenuFor = ""; } }
+                    }
+                    // Detalhes
+                    Rectangle {
+                        visible: !btCol.btShowDetails
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: bteMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Detalhes"; color: theme.fg; font.pixelSize: 12 }
+                        MouseArea { id: bteMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: btCol.btShowDetails = true }
+                    }
+
+                    // detalhes (direto do device, sem processo externo)
+                    ColumnLayout {
+                        visible: btCol.btShowDetails && btCol.btMenuDev
+                        Layout.fillWidth: true; spacing: 2
+                        RowLayout {
+                            Layout.fillWidth: true; Layout.leftMargin: 4; Layout.rightMargin: 4; spacing: 6
+                            Text { text: "Endereco"; color: theme.fgDim; font.pixelSize: 10 }
+                            Item { Layout.fillWidth: true }
+                            Text { text: btCol.btMenuDev ? btCol.btMenuDev.address : ""; color: theme.fg; font.pixelSize: 10 }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; Layout.leftMargin: 4; Layout.rightMargin: 4; spacing: 6
+                            Text { text: "Estado"; color: theme.fgDim; font.pixelSize: 10 }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                color: theme.fg; font.pixelSize: 10
+                                text: !btCol.btMenuDev ? "" : (btCol.btMenuDev.connected ? "conectado"
+                                      : ((btCol.btMenuDev.paired || btCol.btMenuDev.bonded) ? "pareado" : "disponivel"))
+                            }
+                        }
+                        RowLayout {
+                            visible: btCol.btMenuDev && btCol.btMenuDev.batteryAvailable
+                            Layout.fillWidth: true; Layout.leftMargin: 4; Layout.rightMargin: 4; spacing: 6
+                            Text { text: "Bateria"; color: theme.fgDim; font.pixelSize: 10 }
+                            Item { Layout.fillWidth: true }
+                            Text { text: btCol.btMenuDev ? Math.round(btCol.btMenuDev.battery * 100) + "%" : ""
+                                   color: theme.fg; font.pixelSize: 10 }
+                        }
+                    }
+                }
+            }
+
             // ---- view: bluetooth (conexao rapida aos pareados) ----
             ColumnLayout {
                 id: btCol
@@ -1666,6 +1979,13 @@ ShellRoot {
                 spacing: 8
 
                 property var adp: Bluetooth.defaultAdapter
+
+                // menu de contexto (botao direito)
+                property string btMenuFor: ""
+                property var btMenuDev: null
+                property real btMenuX: 0
+                property real btMenuY: 0
+                property bool btShowDetails: false
 
                 // cabecalho: voltar / titulo / escanear / abrir bluetui
                 RowLayout {
@@ -1685,12 +2005,6 @@ ShellRoot {
                         color: (btCol.adp && btCol.adp.discovering) ? theme.accent : theme.fg
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: if (btCol.adp) btCol.adp.discovering = !btCol.adp.discovering }
-                    }
-                    // abrir bluetui (parear dispositivo novo)
-                    Text {
-                        text: "󰍜"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                    onClicked: { Quickshell.execDetached(["omarchy-launch-bluetooth"]); root.acOpen = false } }
                     }
                 }
 
@@ -1760,7 +2074,17 @@ ShellRoot {
                             id: btRowMa
                             anchors.fill: parent; hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: {
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: function (mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    var pt = btRowMa.mapToItem(card, mouse.x, mouse.y);
+                                    btCol.btMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                    btCol.btMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                    btCol.btMenuDev = btRow.modelData;
+                                    btCol.btShowDetails = false;
+                                    btCol.btMenuFor = btRow.modelData.address;
+                                    return;
+                                }
                                 if (btRow.busy) return;
                                 if (btRow.modelData.connected) btRow.modelData.disconnect();
                                 else btRow.modelData.connect();
@@ -1778,6 +2102,59 @@ ShellRoot {
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.fgDim; font.pixelSize: 11
                     text: "Nenhum dispositivo pareado"
+                }
+
+                // ---- disponiveis (descobertos, ainda nao pareados) ----
+                Text {
+                    visible: (btCol.adp ? btCol.adp.enabled : false) && btCol.adp && btCol.adp.discovering
+                    text: "Disponíveis"; color: theme.fgDim; font.pixelSize: 11; font.bold: true
+                    Layout.topMargin: 6
+                }
+                Repeater {
+                    model: Bluetooth.devices
+                    delegate: Rectangle {
+                        id: btNew
+                        required property var modelData
+                        property bool busy: modelData.state === BluetoothDeviceState.Connecting
+                                            || modelData.state === BluetoothDeviceState.Disconnecting
+                                            || modelData.pairing
+                        visible: (btCol.adp ? btCol.adp.enabled : false) && !(modelData.paired || modelData.bonded)
+                        Layout.fillWidth: true
+                        implicitHeight: 38; radius: 8
+                        color: btNewMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 8
+                            Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.fgDim; text: "󰂲" }
+                            Text {
+                                Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
+                                text: btNew.modelData.deviceName || btNew.modelData.name || btNew.modelData.address
+                            }
+                            Text {
+                                color: btNew.busy ? theme.warn : theme.fgDim; font.pixelSize: 10
+                                text: btNew.busy ? "pareando…" : "parear"
+                            }
+                        }
+                        MouseArea {
+                            id: btNewMa
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: function (mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    var pt = btNewMa.mapToItem(card, mouse.x, mouse.y);
+                                    btCol.btMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                    btCol.btMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                    btCol.btMenuDev = btNew.modelData;
+                                    btCol.btShowDetails = false;
+                                    btCol.btMenuFor = btNew.modelData.address;
+                                    return;
+                                }
+                                if (btNew.busy) return;
+                                btNew.modelData.pair();
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1982,12 +2359,12 @@ ShellRoot {
                     MouseArea {
                         id: persoWallMa
                         anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.refreshWall(); card.view = "wall" }
+                        onClicked: { card.view = "wall" }
                     }
                 }
             }
 
-            // ---- view: papel de parede (Wallpaper Engine) ----
+            // ---- view: papel de parede (grafo de agentes + Pinterest) ----
             ColumnLayout {
                 id: wallCol
                 visible: card.view === "wall"
@@ -1996,132 +2373,95 @@ ShellRoot {
                 spacing: 8
 
                 RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
+                    Layout.fillWidth: true; spacing: 8
                     Text {
-                        text: "󰁍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                    onClicked: card.view = "main" }
+                        text: "󰉍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: card.view = "main" }
                     }
                     Text { Layout.fillWidth: true; text: "Papel de parede"; color: theme.fg; font.pixelSize: 14; font.bold: true }
-                    // recarrega a lista (apos baixar novos no Steam WE)
-                    Text {
-                        text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
-                        color: wallRefMa.containsMouse ? theme.accent : theme.fgDim
-                        MouseArea { id: wallRefMa; anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor; onClicked: root.refreshWall() }
+                }
+
+                // busca por vibe
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    Rectangle {
+                        Layout.fillWidth: true; implicitHeight: 32; radius: 8; color: theme.bgAlt
+                        border.width: 1; border.color: theme.border
+                        TextInput {
+                            id: vibeInput
+                            anchors { fill: parent; leftMargin: 10; rightMargin: 10 }
+                            verticalAlignment: TextInput.AlignVCenter
+                            color: theme.fgBright; font.pixelSize: 12; clip: true
+                            onAccepted: if (text.trim()) root.wpaSearch(text.trim())
+                            Text {
+                                anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                                visible: !vibeInput.text && !vibeInput.activeFocus
+                                color: theme.fgDim; font.pixelSize: 12
+                                text: "Descreva uma vibe (ex: montanha neblina)"
+                            }
+                        }
+                    }
+                    Rectangle {
+                        implicitWidth: 70; implicitHeight: 32; radius: 8
+                        color: root.wpaBusy ? theme.surface : Qt.alpha(theme.accent, 0.25)
+                        Text {
+                            anchors.centerIn: parent; font.pixelSize: 12; color: theme.fgBright
+                            text: root.wpaBusy ? "..." : "Buscar"
+                        }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            enabled: !root.wpaBusy
+                            onClicked: if (vibeInput.text.trim()) root.wpaSearch(vibeInput.text.trim())
+                        }
                     }
                 }
 
-                // estado vazio: sem wallpapers baixados (ou tooling ausente)
+                // feedback enquanto busca (gallery-dl baixa do Pinterest, ~30-40s)
                 Text {
-                    visible: root.wallpapers.length === 0
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: theme.fgDim; font.pixelSize: 11
-                    text: "Nenhum wallpaper. Requer linux-wallpaperengine (AUR) + Wallpaper Engine (Steam). Use \"Baixar mais\" pra abrir e baixar."
+                    visible: root.wpaBusy
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    color: theme.accent; font.pixelSize: 11
+                    text: "Buscando wallpapers no Pinterest, pode levar ate ~40s..."
                 }
 
-                // legenda: âmbar = web (crasha), cinza = app (incompatível), alto-falante = tem som
+                // grid de resultados da busca (clicar adiciona ao ciclo)
                 Text {
-                    visible: root.wallpapers.length > 0
+                    visible: root.wpaSearchItems.length > 0
                     Layout.fillWidth: true; color: theme.fgDim; font.pixelSize: 10
-                    text: "Compatíveis primeiro. Âmbar/cinza = incompatível. 󰕾 = tem som."
-                    font.family: "JetBrainsMono Nerd Font"
+                    text: "Clique pra adicionar ao ciclo do tema."
                 }
-
-                // previewer: grade de miniaturas (preview.jpg/gif de cada wallpaper)
                 Flickable {
-                    visible: root.wallpapers.length > 0
+                    visible: root.wpaSearchItems.length > 0
                     Layout.fillWidth: true
-                    implicitHeight: Math.min(wallGrid.implicitHeight, 312)
-                    contentWidth: width
-                    contentHeight: wallGrid.implicitHeight
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-
+                    implicitHeight: Math.min(searchGrid.implicitHeight, 200)
+                    contentWidth: width; contentHeight: searchGrid.implicitHeight
+                    clip: true; boundsBehavior: Flickable.StopAtBounds
                     Grid {
-                        id: wallGrid
-                        width: parent.width
-                        columns: 3
-                        spacing: 8
-                        property real cellW: (width - (columns - 1) * spacing) / columns
-
+                        id: searchGrid
+                        width: parent.width; columns: 3; spacing: 8
+                        property real cellW: (width - 2*spacing) / 3
                         Repeater {
-                            model: root.wallpapers
+                            model: root.wpaSearchItems
                             delegate: Rectangle {
                                 required property var modelData
-                                width: wallGrid.cellW
-                                height: width * 0.62
-                                radius: 8
-                                clip: true
-                                color: theme.bgDark
-                                // ativo = borda verde fixa; hover = borda azul
-                                property bool isActive: modelData.wid === root.wallActive
-                                border.width: isActive ? 3 : ((modelData.kind === "ok" && tnMa.containsMouse) ? 2 : 0)
-                                border.color: isActive ? theme.ok : theme.accent
-
+                                width: searchGrid.cellW; height: width * 0.62
+                                radius: 8; clip: true; color: theme.bgDark
+                                border.width: sMa.containsMouse ? 2 : 0; border.color: theme.accent
                                 Image {
                                     anchors.fill: parent
-                                    source: modelData.preview ? ("file://" + modelData.preview) : ""
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true; cache: true
-                                    // wallpapers incompativeis ficam apagados
-                                    opacity: modelData.kind === "ok" ? 1 : 0.35
+                                    source: root.wpaApi + "/api/thumb/" + modelData.id
+                                    fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: true
                                 }
-
-                                // selo no wallpaper ativo
                                 Text {
-                                    visible: parent.isActive
+                                    visible: modelData.in_cycle
                                     anchors { right: parent.right; top: parent.top; margins: 3 }
-                                    text: "󰄬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12
-                                    color: theme.ok; style: Text.Outline; styleColor: theme.bgDark
+                                    text: "󰈌"; font.family: "JetBrainsMono Nerd Font"
+                                    font.pixelSize: 12; color: theme.ok; style: Text.Outline; styleColor: theme.bgDark
                                 }
-
-                                // faixa inferior com o titulo
-                                Rectangle {
-                                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                                    height: 18
-                                    color: Qt.alpha(theme.bgDark, 0.8)
-                                    Text {
-                                        anchors { fill: parent; leftMargin: 5; rightMargin: 5 }
-                                        verticalAlignment: Text.AlignVCenter
-                                        color: theme.fgBright; font.pixelSize: 9
-                                        elide: Text.ElideRight; text: modelData.name
-                                    }
-                                }
-
-                                // badge de incompativel (canto superior esquerdo)
-                                Rectangle {
-                                    visible: modelData.kind !== "ok"
-                                    anchors { left: parent.left; top: parent.top; margins: 4 }
-                                    radius: 4; height: 14
-                                    width: kindLbl.implicitWidth + 8
-                                    color: modelData.kind === "web" ? Qt.alpha(theme.warn, 0.8) : Qt.alpha(theme.fgDim, 0.8)
-                                    Text {
-                                        id: kindLbl; anchors.centerIn: parent
-                                        color: theme.bgDark; font.pixelSize: 8; font.bold: true
-                                        text: modelData.kind === "web" ? "web" : "app"
-                                    }
-                                }
-
-                                // icone de som (canto superior direito)
-                                Text {
-                                    visible: modelData.audio
-                                    anchors { right: parent.right; top: parent.top; margins: 4 }
-                                    text: "󰕾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11
-                                    color: theme.warn
-                                    style: Text.Outline; styleColor: theme.bgDark
-                                }
-
                                 MouseArea {
-                                    id: tnMa
-                                    anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: modelData.kind === "ok" ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                    onClicked: {
-                                        if (modelData.kind === "ok") { root.applyWall(modelData.wid); root.acOpen = false; }
-                                        else { root.wallWarn(modelData.kind); }
-                                    }
+                                    id: sMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.wpaAdd([modelData.id])
                                 }
                             }
                         }
@@ -2130,37 +2470,52 @@ ShellRoot {
 
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
-                // baixar mais: desliga o linux-wpe e abre o Wallpaper Engine do Steam
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 36; radius: 8
-                    color: wDlMa.containsMouse ? Qt.alpha(theme.ok, 0.2) : "transparent"
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.ok; text: "󰇚" }
-                        Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Baixar mais (abrir Wallpaper Engine)" }
-                    }
-                    MouseArea {
-                        id: wDlMa
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.browseWall(); root.acOpen = false; }
-                    }
+                // ciclo atual (remover com clique)
+                Text {
+                    Layout.fillWidth: true; color: theme.fgDim; font.pixelSize: 11; font.bold: true
+                    text: "No ciclo do tema (" + root.wpaCycleItems.length + ")"
                 }
-
-                // desligar o wallpaper animado (libera a GPU)
-                Rectangle {
+                Text {
+                    visible: root.wpaCycleItems.length === 0
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    color: theme.fgDim; font.pixelSize: 11
+                    text: "Vazio. Busque acima e clique numa imagem pra adicionar."
+                }
+                Flickable {
+                    visible: root.wpaCycleItems.length > 0
                     Layout.fillWidth: true
-                    implicitHeight: 36; radius: 8
-                    color: wOffMa.containsMouse ? Qt.alpha(theme.danger, 0.2) : "transparent"
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.danger; text: "󰸉" }
-                        Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12; text: "Desligar wallpaper animado" }
-                    }
-                    MouseArea {
-                        id: wOffMa
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.offWall(); root.acOpen = false; }
+                    implicitHeight: Math.min(cycleGrid.implicitHeight, 180)
+                    contentWidth: width; contentHeight: cycleGrid.implicitHeight
+                    clip: true; boundsBehavior: Flickable.StopAtBounds
+                    Grid {
+                        id: cycleGrid
+                        width: parent.width; columns: 3; spacing: 8
+                        property real cellW: (width - 2*spacing) / 3
+                        Repeater {
+                            model: root.wpaCycleItems
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: cycleGrid.cellW; height: width * 0.62
+                                radius: 8; clip: true; color: theme.bgDark
+                                border.width: cMa.containsMouse ? 2 : 0; border.color: theme.danger
+                                Image {
+                                    anchors.fill: parent
+                                    source: root.wpaApi + "/api/cyclethumb?f=" + encodeURIComponent(modelData.file)
+                                    fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: true
+                                }
+                                Text {
+                                    visible: cMa.containsMouse
+                                    anchors.centerIn: parent
+                                    text: "󰖚"; font.family: "JetBrainsMono Nerd Font"
+                                    font.pixelSize: 18; color: theme.danger; style: Text.Outline; styleColor: theme.bgDark
+                                }
+                                MouseArea {
+                                    id: cMa; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.wpaRemove([modelData.file])
+                                }
+                            }
+                        }
                     }
                 }
             }
