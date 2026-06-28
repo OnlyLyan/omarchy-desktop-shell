@@ -744,9 +744,18 @@ ShellRoot {
             }
 
             anchors { bottom: true; left: true; right: true }
-            implicitHeight: 38
-            // ~85% opaca: o wallpaper aparece sutilmente atraves da barra (AARRGGBB, D9=~85%)
-            color: Qt.alpha(theme.bg, 0.85)
+            // ilhas flutuantes: janela ocupa a faixa toda mas e transparente
+            implicitHeight: ui.islandHeight + ui.barMargin * 2
+            exclusiveZone: ui.islandHeight + ui.barMargin
+            color: "transparent"
+
+            // mask de input: so as 3 ilhas recebem clique; os vaos transparentes
+            // deixam o clique passar pra janela de baixo
+            mask: Region {
+                Region { item: islandLeft }
+                Region { item: islandCenter }
+                Region { item: islandRight }
+            }
 
             // ---- agrupa as janelas por appId ----
             property var groups: {
@@ -762,12 +771,24 @@ ShellRoot {
                 return order.map(function (k) { return { appId: k, wins: map[k] }; });
             }
 
-            // menu Omarchy (ancorado a esquerda)
-            Text {
+            // ---- ilha esquerda: menu Omarchy + batimentos do PC ----
+            Rectangle {
+                id: islandLeft
                 anchors.left: parent.left
-                anchors.leftMargin: 10
+                anchors.leftMargin: ui.barMargin
                 anchors.verticalCenter: parent.verticalCenter
-                    text: ""
+                height: ui.islandHeight
+                width: leftRow.implicitWidth + ui.islandPadH * 2
+                radius: ui.islandRadius
+                color: theme.bg
+                RowLayout {
+                    id: leftRow
+                    anchors.centerIn: parent
+                    spacing: 10
+
+                    // menu Omarchy
+                    Text {
+                    text:""
                     font.family: "omarchy"
                     font.pixelSize: 20
                     color: theme.fg
@@ -784,9 +805,7 @@ ShellRoot {
             // bpm 60 (tranquilo) -> 160 (correndo); cor verde -> ambar -> vermelho.
             Row {
                 id: heartBeat
-                anchors.left: parent.left
-                anchors.leftMargin: 40
-                anchors.verticalCenter: parent.verticalCenter
+                Layout.alignment: Qt.AlignVCenter
                 spacing: 5
                 property real stress: Math.max(0, Math.min(1, Math.max(
                     sys.cpu / 100,
@@ -863,13 +882,24 @@ ShellRoot {
                     NumberAnimation { target: heart; property: "scale"; to: 1.28; duration: 60; easing.type: Easing.OutQuad }
                     NumberAnimation { target: heart; property: "scale"; to: 1.0;  duration: 110; easing.type: Easing.InQuad }
                 }
+                    }
+                }
             }
 
             // ---- taskbar agrupada (CENTRO da tela) ----
-            RowLayout {
+            Rectangle {
+                id: islandCenter
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 4
+                height: ui.islandHeight
+                width: taskRow.implicitWidth + ui.islandPadH * 2
+                visible: bar.groups.length > 0
+                radius: ui.islandRadius
+                color: theme.bg
+                RowLayout {
+                    id: taskRow
+                    anchors.centerIn: parent
+                    spacing: 4
                 Repeater {
                     model: bar.groups
                         delegate: Rectangle {
@@ -1029,13 +1059,22 @@ ShellRoot {
                         }
                     }
                 }
+            }
 
-            // ---- grupo da direita: status ----
-            RowLayout {
+            // ---- ilha direita: status ----
+            Rectangle {
+                id: islandRight
                 anchors.right: parent.right
-                anchors.rightMargin: 12
+                anchors.rightMargin: ui.barMargin
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 12
+                height: ui.islandHeight
+                width: rightRow.implicitWidth + ui.islandPadH * 2
+                radius: ui.islandRadius
+                color: theme.bg
+                RowLayout {
+                    id: rightRow
+                    anchors.centerIn: parent
+                    spacing: 12
 
                 // ---- player de midia: so um icone play/pause (titulo fica na central) ----
                 // clique esquerdo = play/pause; clique direito = abre a central com o player
@@ -1245,6 +1284,7 @@ ShellRoot {
                     color: theme.fg
                     font.pixelSize: 13
                     text: clock.date.toLocaleString(Qt.locale("pt_BR"), "ddd dd/MM  HH:mm")
+                }
                 }
             }
         }
