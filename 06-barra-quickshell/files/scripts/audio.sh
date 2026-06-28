@@ -117,9 +117,14 @@ case "${1:-get}" in
     # 1 linha por APP (junta streams do mesmo app): "ids|mute|vol|sink|nome".
     # mute=1 so se TODOS os streams do app estiverem mudos; vol = o maior dos streams.
     # sink = nome do sink do 1o stream do app (resolvido via index->nome).
-    pactl list sink-inputs 2>/dev/null | awk -v comb="$COMBINE_NAME" '
-      function flush() { if (id!="") { n=(app!=""?app:med); if (comb!="" && index(n,comb)>0) n="Espelho"; print id "|" mute "|" vol "|" sinkidx "|" n } }
-      /^Sink Input #/ { flush(); id=substr($3,2); mute=0; vol=0; app=""; med=""; sinkidx="" }
+    pactl list sink-inputs 2>/dev/null | awk -v comb="$COMBINE_NAME" -v clients="$(pactl list clients 2>/dev/null | awk '/^Client #/{c=substr($2,2)} /application.process.binary/{b=$3; gsub(/"/,"",b); print c":"b}' | paste -sd,)" '
+      BEGIN { nc=split(clients,ca,","); for (i=1;i<=nc;i++){ split(ca[i],cb,":"); cbin[cb[1]]=cb[2] } }
+      function flush() { if (id!="") { n=(app!=""?app:med);
+                          if (cli!="" && cbin[cli]=="linux-wallpaperengine") n="Papel de parede";
+                          else if (comb!="" && index(n,comb)>0) n="Espelho";
+                          print id "|" mute "|" vol "|" sinkidx "|" n } }
+      /^Sink Input #/ { flush(); id=substr($3,2); mute=0; vol=0; app=""; med=""; sinkidx=""; cli="" }
+      /^[[:space:]]*Client:/ { cli=$2 }
       /^[[:space:]]*Sink:/ { sinkidx=$2 }
       /^[[:space:]]*Mute:/ { mute=($2=="yes")?1:0 }
       /^[[:space:]]*Volume:/ && vol==0 { if (match($0,/[0-9]+%/)) vol=substr($0,RSTART,RLENGTH-1) }
