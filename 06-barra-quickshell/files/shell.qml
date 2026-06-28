@@ -29,7 +29,7 @@ ShellRoot {
         readonly property int barMargin: 4         // respiro das bordas da tela (barra mais baixa)
         readonly property int islandPadH: 13       // padding horizontal interno
         readonly property int moduleSpacing: 10    // espaco entre modulos dentro da ilha
-        readonly property real islandOpacity: 0.92 // opacidade do fundo da ilha
+        readonly property real islandOpacity: 0.75 // opacidade do fundo da ilha
         readonly property real shadowBlur: 16      // desfoque da sombra
         readonly property real shadowOpacity: 0.35 // alpha da sombra
     }
@@ -1416,7 +1416,7 @@ ShellRoot {
             anchors.rightMargin: 8
             anchors.bottomMargin: ui.islandHeight + ui.barMargin * 2 + 6
             radius: 16
-            color: theme.bg
+            color: Qt.alpha(theme.bg, 0.75)
             border.color: Qt.alpha(theme.accent, 0.2)
             border.width: 1
 
