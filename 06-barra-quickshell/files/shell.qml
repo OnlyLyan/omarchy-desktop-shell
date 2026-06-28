@@ -1224,9 +1224,6 @@ ShellRoot {
                     }
                 }
 
-                    } // fim clusterRow
-                } // fim clusterBox
-
                 // ---- bateria: indicador grafico que enche conforme a carga ----
                 // (sem numero; cheio = 100%, vermelho quando baixa, verde carregando)
                 Item {
@@ -1306,6 +1303,9 @@ ShellRoot {
                         onClicked: { root.acScreen = bar.screen; card.view = "notif"; root.refreshNotifs(); root.acOpen = true; }
                     }
                 }
+
+                    } // fim clusterRow
+                } // fim clusterBox
 
                 // ---- chevron: abre a central de acoes ----
                 Text {
