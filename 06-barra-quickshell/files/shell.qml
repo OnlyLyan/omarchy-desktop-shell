@@ -20,6 +20,19 @@ ShellRoot {
     property var wpaMonitors: []  // conectores onde o grafo aparece (vazio = todos)
     property int wpaFps: 30
 
+    // ===== tokens de geometria das ilhas (theme-independente; ajuste ao vivo) =====
+    QtObject {
+        id: ui
+        readonly property int islandRadius: 16     // raio dos cantos da ilha
+        readonly property int islandHeight: 32     // altura interna da ilha
+        readonly property int barMargin: 8         // respiro das bordas da tela
+        readonly property int islandPadH: 13       // padding horizontal interno
+        readonly property int moduleSpacing: 10    // espaco entre modulos dentro da ilha
+        readonly property real islandOpacity: 0.92 // opacidade do fundo da ilha
+        readonly property real shadowBlur: 16      // desfoque da sombra
+        readonly property real shadowOpacity: 0.35 // alpha da sombra
+    }
+
     // relogio do sistema
     SystemClock {
         id: clock
