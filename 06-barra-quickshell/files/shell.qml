@@ -1081,6 +1081,7 @@ ShellRoot {
                 border.color: Qt.alpha(theme.accent, 0.2)
                 RowLayout {
                     id: rightRow
+                    property bool clusterExpanded: false
                     anchors.centerIn: parent
                     spacing: ui.moduleSpacing
 
@@ -1100,6 +1101,37 @@ ShellRoot {
                         }
                     }
                 }
+
+                // ---- botao recolher/expandir o cluster (tray + metricas) ----
+                Text {
+                    id: clusterToggle
+                    Layout.alignment: Qt.AlignVCenter
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 14
+                    color: rightRow.clusterExpanded ? theme.accent : theme.fgDim
+                    text: rightRow.clusterExpanded ? "󰅁" : "󰅂"   // expandido: recolher (esq); recolhido: expandir (dir)
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: rightRow.clusterExpanded = !rightRow.clusterExpanded
+                    }
+                }
+
+                // ---- cluster recolhivel: tray + update + cpu + ram + gpu ----
+                Item {
+                    id: clusterBox
+                    clip: true
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.preferredHeight: ui.islandHeight
+                    Layout.preferredWidth: rightRow.clusterExpanded ? clusterRow.implicitWidth : 0
+                    Behavior on Layout.preferredWidth {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                    }
+                    RowLayout {
+                        id: clusterRow
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: ui.moduleSpacing
 
                 // ---- system tray ----
                 RowLayout {
@@ -1191,6 +1223,9 @@ ShellRoot {
                         onClicked: Quickshell.execDetached(["sh", "-c", "kitty -e sh -c 'watch -n1 nvidia-smi'"])
                     }
                 }
+
+                    } // fim clusterRow
+                } // fim clusterBox
 
                 // ---- bateria: indicador grafico que enche conforme a carga ----
                 // (sem numero; cheio = 100%, vermelho quando baixa, verde carregando)
