@@ -11,6 +11,7 @@ import Quickshell.Bluetooth
 import Quickshell.Services.Mpris
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Effects
 
 ShellRoot {
     id: root
@@ -780,11 +781,13 @@ ShellRoot {
                 height: ui.islandHeight
                 width: leftRow.implicitWidth + ui.islandPadH * 2
                 radius: ui.islandRadius
-                color: theme.bg
+                color: Qt.alpha(theme.bg, ui.islandOpacity)
+                border.width: 1
+                border.color: Qt.alpha(theme.accent, 0.2)
                 RowLayout {
                     id: leftRow
                     anchors.centerIn: parent
-                    spacing: 10
+                    spacing: ui.moduleSpacing
 
                     // menu Omarchy
                     Text {
@@ -895,7 +898,9 @@ ShellRoot {
                 width: taskRow.implicitWidth + ui.islandPadH * 2
                 visible: bar.groups.length > 0
                 radius: ui.islandRadius
-                color: theme.bg
+                color: Qt.alpha(theme.bg, ui.islandOpacity)
+                border.width: 1
+                border.color: Qt.alpha(theme.accent, 0.2)
                 RowLayout {
                     id: taskRow
                     anchors.centerIn: parent
@@ -1070,11 +1075,13 @@ ShellRoot {
                 height: ui.islandHeight
                 width: rightRow.implicitWidth + ui.islandPadH * 2
                 radius: ui.islandRadius
-                color: theme.bg
+                color: Qt.alpha(theme.bg, ui.islandOpacity)
+                border.width: 1
+                border.color: Qt.alpha(theme.accent, 0.2)
                 RowLayout {
                     id: rightRow
                     anchors.centerIn: parent
-                    spacing: 12
+                    spacing: ui.moduleSpacing
 
                 // ---- player de midia: so um icone play/pause (titulo fica na central) ----
                 // clique esquerdo = play/pause; clique direito = abre a central com o player
@@ -1286,6 +1293,37 @@ ShellRoot {
                     text: clock.date.toLocaleString(Qt.locale("pt_BR"), "ddd dd/MM  HH:mm")
                 }
                 }
+            }
+            RectangularShadow {
+                anchors.fill: islandLeft
+                radius: islandLeft.radius
+                blur: ui.shadowBlur
+                spread: 0
+                offset: Qt.vector2d(0, 2)
+                color: Qt.rgba(0, 0, 0, ui.shadowOpacity)
+                cached: true
+                z: -1
+            }
+            RectangularShadow {
+                anchors.fill: islandCenter
+                radius: islandCenter.radius
+                blur: ui.shadowBlur
+                spread: 0
+                offset: Qt.vector2d(0, 2)
+                color: Qt.rgba(0, 0, 0, ui.shadowOpacity)
+                cached: true
+                z: -1
+                visible: islandCenter.visible
+            }
+            RectangularShadow {
+                anchors.fill: islandRight
+                radius: islandRight.radius
+                blur: ui.shadowBlur
+                spread: 0
+                offset: Qt.vector2d(0, 2)
+                color: Qt.rgba(0, 0, 0, ui.shadowOpacity)
+                cached: true
+                z: -1
             }
         }
     }
