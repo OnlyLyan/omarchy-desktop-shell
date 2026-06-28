@@ -50,3 +50,18 @@ Obs: o Alt+Tab custom (`alttab-next.sh`/`alttab-prev.sh`) esta na pasta 07.
 
 ## Instalar
 `./install.sh` (depois `touch ~/.local/state/omarchy/toggles/waybar-off` e relogar)
+
+## Atualizacao 2026-06-28: ilhas flutuantes Material
+
+A barra foi repaginada de faixa unica para tres ilhas flutuantes arredondadas (estilo Material,
+inspirado no adsovetzky/Adsovetzky-Omarchy-s-Waybar). Esquerda: menu + ECG. Centro: taskbar
+agrupada (some sem janela). Direita: cluster.
+
+- Geometria via tokens `QtObject { id: ui }` no topo do `shell.qml` (raio, altura, vao, opacidade,
+  sombra, espacamento). Vao igual nos quatro lados (`barMargin`), `exclusiveZone = islandHeight + 2*barMargin`.
+- Material: fundo com opacidade, borda accent, sombra `RectangularShadow` (`import QtQuick.Effects`).
+  Theme-aware (recolore na troca de tema do Omarchy).
+- Cluster recolhivel na ilha direita: chevron esconde/mostra tray + cpu/ram/gpu + bateria + mic +
+  notificacao (recolhido por padrao). Sempre visiveis: midia (icone), chevron do cluster, chevron
+  da central e relogio.
+- `PanelWindow` transparente com `mask: Region` cobrindo so as ilhas (click-through nos vaos).
