@@ -940,6 +940,8 @@ ShellRoot {
                                     var id = appBtn.modelData.appId;
                                     var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
                                     var icon = (de && de.icon && de.icon.length) ? de.icon : id;
+                                    // jogos Steam: a janela e steam_app_<id>, mas o icone no tema e steam_icon_<id>
+                                    if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
                                     return Quickshell.iconPath(icon, "application-x-executable");
                                 }
                             }
@@ -2982,6 +2984,8 @@ ShellRoot {
                                                 var id = thumb.modelData.appId;
                                                 var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
                                                 var icon = (de && de.icon && de.icon.length) ? de.icon : id;
+                                                // jogos Steam: janela steam_app_<id> -> icone steam_icon_<id>
+                                                if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
                                                 return Quickshell.iconPath(icon, "application-x-executable");
                                             }
                                         }
