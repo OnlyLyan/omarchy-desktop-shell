@@ -2669,6 +2669,76 @@ ShellRoot {
                 }
             }
 
+            // ---- menu de contexto de saida por app (botao direito) ----
+            MouseArea {
+                visible: card.view === "audio" && audioCol.appMenuFor !== ""
+                anchors.fill: parent; z: 99
+                acceptedButtons: Qt.AllButtons
+                onClicked: { audioCol.appMenuFor = ""; }
+            }
+            Rectangle {
+                id: appOutMenu
+                visible: card.view === "audio" && audioCol.appMenuFor !== ""
+                z: 100
+                x: audioCol.appMenuX; y: audioCol.appMenuY
+                width: 178
+                implicitHeight: appOutMenuCol.implicitHeight + 12
+                height: implicitHeight
+                radius: 10
+                color: theme.bgAlt
+                border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
+
+                ColumnLayout {
+                    id: appOutMenuCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                    anchors.margins: 6
+                    spacing: 2
+
+                    Text {
+                        Layout.fillWidth: true; Layout.margins: 4
+                        text: audioCol.appMenuData.name || ""
+                        color: theme.fgBright; font.pixelSize: 11; font.bold: true; elide: Text.ElideRight
+                    }
+
+                    // um item por dispositivo de saida
+                    Repeater {
+                        model: root.audioSinks
+                        delegate: Rectangle {
+                            required property var modelData
+                            property bool isCur: modelData.name === audioCol.appMenuData.outSink
+                            Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                            color: devMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 8
+                                Text { text: root.sinkGlyph(modelData.icon); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                                       color: isCur ? theme.accent : theme.fg }
+                                Text { Layout.fillWidth: true; text: modelData.desc; color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight }
+                                Text { visible: isCur; text: "󰄬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 12; color: theme.ok }
+                            }
+                            MouseArea { id: devMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.setAppOutput(audioCol.appMenuData.ids, modelData.name);
+                                    audioCol.appMenuFor = "";
+                                } }
+                        }
+                    }
+
+                    // voltar ao padrao (so quando o app esta roteado pra fora do padrao)
+                    Rectangle {
+                        visible: audioCol.appMenuData.outSink !== root.defaultSinkName() && root.defaultSinkName() !== ""
+                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                        color: defMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
+                               text: "Voltar ao padrao"; color: theme.warn; font.pixelSize: 12 }
+                        MouseArea { id: defMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.setAppOutput(audioCol.appMenuData.ids, root.defaultSinkName());
+                                audioCol.appMenuFor = "";
+                            } }
+                    }
+                }
+            }
+
             // ---- view: som (dispositivos de saida + volume por app + bass) ----
             ColumnLayout {
                 id: audioCol
