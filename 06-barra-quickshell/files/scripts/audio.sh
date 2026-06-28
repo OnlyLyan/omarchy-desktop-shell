@@ -117,8 +117,8 @@ case "${1:-get}" in
     # 1 linha por APP (junta streams do mesmo app): "ids|mute|vol|sink|nome".
     # mute=1 so se TODOS os streams do app estiverem mudos; vol = o maior dos streams.
     # sink = nome do sink do 1o stream do app (resolvido via index->nome).
-    pactl list sink-inputs 2>/dev/null | awk '
-      function flush() { if (id!="") { n=(app!=""?app:med); print id "|" mute "|" vol "|" sinkidx "|" n } }
+    pactl list sink-inputs 2>/dev/null | awk -v comb="$COMBINE_NAME" '
+      function flush() { if (id!="") { n=(app!=""?app:med); if (comb!="" && index(n,comb)>0) n="Espelho"; print id "|" mute "|" vol "|" sinkidx "|" n } }
       /^Sink Input #/ { flush(); id=substr($3,2); mute=0; vol=0; app=""; med=""; sinkidx="" }
       /^[[:space:]]*Sink:/ { sinkidx=$2 }
       /^[[:space:]]*Mute:/ { mute=($2=="yes")?1:0 }
