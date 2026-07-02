@@ -114,6 +114,78 @@ ShellRoot {
         function reload(): void { themeFile.reload(); theme.parse(themeFile.text()); }
     }
 
+    // recria a cena inteira (todos os surfaces) apos uma troca de monitor ao vivo.
+    // o quickshell 0.3.0 nao relayouta barra/wallpaper/overlay quando o output muda de
+    // posicao; sem isso os surfaces ficam presos na geometria antiga (barra some, overlay
+    // preso vira tela preta). chamado pelo watchdog externo do monitors.sh no revert.
+    IpcHandler {
+        target: "shell"
+        function reload(): void { Quickshell.reload(true); }
+    }
+
+    // ===== toast de confirmacao do preview de monitores =====
+    // Ao aplicar uma troca de monitor, o painel recarrega a cena (pra os surfaces
+    // re-layoutarem). Este toast reaparece no startup lendo o estado pending do
+    // monitors.sh e deixa Confirmar (persiste) ou Reverter. O watchdog externo reverte
+    // sozinho se ninguem clicar, entao nunca fica preso numa config ruim.
+    property int monPending: 0
+    Process {
+        id: monPendingProc
+        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "pending"]
+        stdout: StdioCollector { onStreamFinished: { var n = parseInt(this.text.trim()); root.monPending = isNaN(n) ? 0 : n; } }
+    }
+    // Confirmar persiste e AGORA recarrega a cena, que e quando os surfaces (barra) sao
+    // corrigidos pra nova geometria. Reverter/watchdog tambem recarregam.
+    Process { id: monConfirmProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "confirm"]; onExited: Quickshell.reload(true) }
+    Process { id: monCancelProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "cancel"]; onExited: Quickshell.reload(true) }
+    Timer {
+        id: monPendingTimer; interval: 1000; repeat: true; running: root.monPending > 0
+        onTriggered: { root.monPending--; }  // cosmetico; o revert real e do watchdog
+    }
+    Component.onCompleted: monPendingProc.running = true
+
+    PanelWindow {
+        visible: root.monPending > 0
+        screen: Quickshell.screens.length ? Quickshell.screens[0] : null
+        anchors { top: true; left: true; right: true }
+        implicitHeight: 44
+        exclusiveZone: 0
+        color: "transparent"
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.namespace: "qsbar-montoast"
+        mask: Region { item: monToastPill }
+
+        Rectangle {
+            id: monToastPill
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top; anchors.topMargin: 6
+            implicitHeight: 34; implicitWidth: monToastRow.implicitWidth + 24; radius: 10
+            color: theme.bgAlt; border.color: Qt.alpha(theme.warn, 0.6); border.width: 1
+            RowLayout {
+                id: monToastRow
+                anchors.centerIn: parent; spacing: 10
+                Text {
+                    text: "Manter esta configuração? " + root.monPending + "s"
+                    color: theme.fgBright; font.pixelSize: 11
+                }
+                Rectangle {
+                    implicitWidth: 44; implicitHeight: 22; radius: 6
+                    color: monToastYes.containsMouse ? theme.ok : Qt.alpha(theme.ok, 0.7)
+                    Text { anchors.centerIn: parent; text: "Sim"; color: theme.bg; font.pixelSize: 10; font.bold: true }
+                    MouseArea { id: monToastYes; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { monConfirmProc.running = true; root.monPending = 0; } }
+                }
+                Rectangle {
+                    implicitWidth: 66; implicitHeight: 22; radius: 6
+                    color: monToastNo.containsMouse ? theme.danger : Qt.alpha(theme.danger, 0.7)
+                    Text { anchors.centerIn: parent; text: "Reverter"; color: theme.bg; font.pixelSize: 10; font.bold: true }
+                    MouseArea { id: monToastNo; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: { monCancelProc.running = true; root.monPending = 0; } }
+                }
+            }
+        }
+    }
+
     // ---- estado de sistema (cpu/ram/rede) por polling ----
     QtObject {
         id: sys
@@ -150,6 +222,7 @@ ShellRoot {
             "[ \"$(cat $i/operstate 2>/dev/null)\" = up ] || continue; " +
             "if [ -d \"$i/wireless\" ]; then " +
             "s=$(iw dev \"$d\" link 2>/dev/null | sed -n 's/.*SSID: //p'); " +
+            "s=$(printf '%b' \"$s\"); " +   // decodifica escapes \\xNN do iw (SSID nao-ASCII)
             "echo \"wifi:${s:-Wi-Fi}\"; exit 0; else echo eth; exit 0; fi; done; echo off"]
         stdout: StdioCollector { onStreamFinished: sys.net = this.text.trim() }
     }
@@ -1417,6 +1490,7 @@ ShellRoot {
                              else if (view === "notif") root.refreshNotifs();
                              else if (view === "wall") root.wpaLoadCycle();
                              else if (view === "audio") root.refreshAudio();
+                             else if (view === "monitors") { monitorsCol.reload(); monitorsCol.loadProfiles(); }
                              else if (view === "bt" && Bluetooth.defaultAdapter && Bluetooth.defaultAdapter.enabled)
                                   Bluetooth.defaultAdapter.discovering = true; }
             // animacao de abrir/fechar: fade + leve slide de baixo pra cima
@@ -1431,7 +1505,8 @@ ShellRoot {
                              : (view === "notif" ? notifCol.implicitHeight
                              : (view === "wall" ? wallCol.implicitHeight
                              : (view === "audio" ? audioCol.implicitHeight
-                             : (view === "perso" ? persoCol.implicitHeight : acCol.implicitHeight)))))) + 28
+                             : (view === "perso" ? persoCol.implicitHeight
+                             : (view === "monitors" ? monitorsCol.implicitHeight : acCol.implicitHeight))))))) + 28
             height: implicitHeight
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -1579,7 +1654,7 @@ ShellRoot {
                     spacing: 8
                     Repeater {
                         model: [
-                            { key: "caf",   icon: "󰅶", label: "Caffeine" },
+                            { key: "caf",   icon: "󰅶", label: "Cafeína" },
                             { key: "night", icon: "󰖔", label: "Noturno" },
                             { key: "mic",   icon: "󰍬", label: "Mic" }
                         ]
@@ -1694,7 +1769,7 @@ ShellRoot {
                         Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰉼" }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 0
-                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Personalizacao" }
+                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Personalização" }
                             Text { color: theme.fgDim; font.pixelSize: 10; text: "Tema e papel de parede" }
                         }
                         Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
@@ -1703,6 +1778,28 @@ ShellRoot {
                         id: persoMa
                         anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: { root.refreshThemes(); card.view = "perso" }
+                    }
+                }
+
+                // monitores: card proprio (resolucao, escala, perfis)
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 46; radius: 12
+                    color: monMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
+                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰍹" }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 0
+                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Monitores" }
+                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Resolução, escala e perfis" }
+                        }
+                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
+                    }
+                    MouseArea {
+                        id: monMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: card.view = "monitors"
                     }
                 }
 
@@ -2324,7 +2421,7 @@ ShellRoot {
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { text: "Notificacoes"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                    Text { text: "Notificações"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Item { Layout.fillWidth: true }
                     // ler a notificacao mais recente (a do topo) em voz, via TTS
                     Text {
@@ -2396,11 +2493,24 @@ ShellRoot {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.fgDim; font.pixelSize: 11
-                    text: "Sem notificacoes recentes"
+                    text: "Sem notificações recentes"
                 }
             }
 
             // ---- view: personalizacao (tema + papel de parede) ----
+            MonitorPanel {
+                id: monitorsCol
+                visible: card.view === "monitors"
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                anchors.margins: 14
+                theme: theme
+                screen: root.acScreen
+                onBack: card.view = "main"
+                // aplicou ao vivo: fecha a central (sem flash) e mostra o toast lendo o
+                // pending. O reload que corrige a barra fica pro Confirmar/Reverter.
+                onApplied: { card.view = "main"; root.acOpen = false; monPendingProc.running = true; }
+            }
+
             ColumnLayout {
                 id: persoCol
                 visible: card.view === "perso"
@@ -2416,7 +2526,7 @@ ShellRoot {
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: card.view = "main" }
                     }
-                    Text { Layout.fillWidth: true; text: "Personalizacao"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                    Text { Layout.fillWidth: true; text: "Personalização"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Text {
                         text: "󰑐"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
                         color: persoRefMa.containsMouse ? theme.accent : theme.fgDim
