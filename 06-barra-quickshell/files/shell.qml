@@ -362,13 +362,23 @@ ShellRoot {
     // ---- temas Omarchy: lista (nome+fundo+accent) + tema atual ----
     property var themes: []
     property string currentTheme: ""
-    // ordem de exibicao: tema atual primeiro, resto alfabetico
+    property var favorites: []            // slugs favoritados, na ordem do arquivo theme-favorites
+    property string themeMenuOpenFor: ""  // slug com o menu de contexto aberto (so um por vez)
+    function isFav(snake) { return root.favorites.indexOf(snake) !== -1; }
+    // ordem de exibicao: tema atual primeiro, depois favoritos (ordem do arquivo), depois resto alfabetico
     readonly property var orderedThemes: {
         var a = themes.slice();
+        var fav = root.favorites;
+        function rank(t) {
+            if (t.snake === currentTheme) return -1;   // atual sempre primeiro
+            var fi = fav.indexOf(t.snake);
+            if (fi !== -1) return fi;                   // favoritos na ordem em que foram favoritados
+            return 100000;                              // resto depois
+        }
         a.sort(function (x, y) {
-            if (x.snake === currentTheme) return -1;
-            if (y.snake === currentTheme) return 1;
-            return x.snake < y.snake ? -1 : (x.snake > y.snake ? 1 : 0);
+            var rx = rank(x), ry = rank(y);
+            if (rx !== ry) return rx - ry;
+            return x.snake < y.snake ? -1 : (x.snake > y.snake ? 1 : 0);  // desempate alfabetico
         });
         return a;
     }
@@ -406,7 +416,29 @@ ShellRoot {
         command: ["cat", "/home/lucas/.config/omarchy/current/theme.name"]
         stdout: StdioCollector { onStreamFinished: { root.currentTheme = this.text.trim(); } }
     }
-    function refreshThemes() { themesProc.running = true; curThemeProc.running = true; }
+    // le a lista de favoritos (um slug por linha)
+    Process {
+        id: favReadProc
+        command: ["cat", "/home/lucas/.config/omarchy/theme-favorites"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var out = [], lines = this.text.split("\n");
+                for (var i = 0; i < lines.length; i++) {
+                    var s = lines[i].trim();
+                    if (s.length && out.indexOf(s) === -1) out.push(s);
+                }
+                root.favorites = out;
+            }
+        }
+    }
+    // alterna favorito e recarrega a lista ao terminar (grade reordena + estrela atualiza)
+    Process { id: favToggleProc; onExited: favReadProc.running = true }
+    function toggleFav(snake) {
+        favToggleProc.command = ["/home/lucas/.local/bin/omarchy-theme-fav", "toggle", snake];
+        favToggleProc.running = true;
+        root.themeMenuOpenFor = "";
+    }
+    function refreshThemes() { themesProc.running = true; curThemeProc.running = true; favReadProc.running = true; }
     function setTheme(snake) { Quickshell.execDetached(["omarchy-theme-set", snake]); root.currentTheme = snake; }
 
     // ---- update do Omarchy disponivel? (git ls-remote, poll raro) ----
@@ -2572,8 +2604,10 @@ ShellRoot {
                         Repeater {
                             model: root.orderedThemes
                             delegate: Rectangle {
+                                id: themeCard
                                 required property var modelData
                                 readonly property bool current: modelData.snake === root.currentTheme
+                                readonly property bool fav: root.isFav(modelData.snake)
                                 Layout.fillWidth: true
                                 implicitHeight: 42; radius: 10
                                 color: current ? Qt.alpha(theme.accent, 0.22)
@@ -2595,6 +2629,12 @@ ShellRoot {
                                             border.width: 1; border.color: Qt.alpha(theme.bg, 0.4)
                                         }
                                     }
+                                    // estrela: tema favoritado
+                                    Text {
+                                        visible: themeCard.fav
+                                        text: "󰓎"; font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 13; color: theme.accent
+                                    }
                                     Text {
                                         Layout.fillWidth: true
                                         text: modelData.name
@@ -2611,7 +2651,63 @@ ShellRoot {
                                 MouseArea {
                                     id: tHov
                                     anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.setTheme(modelData.snake)
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: function (e) {
+                                        if (e.button === Qt.RightButton) {
+                                            root.themeMenuOpenFor = modelData.snake;   // abre menu de contexto
+                                        } else {
+                                            root.themeMenuOpenFor = "";
+                                            root.setTheme(modelData.snake);            // esquerdo aplica
+                                        }
+                                    }
+                                }
+                                // fecha o menu ao sair do card e do popup (com tolerancia)
+                                property bool menuHovering: tHov.containsMouse || menuAreaHover.hovered
+                                onMenuHoveringChanged: menuHovering ? menuCloseTimer.stop() : menuCloseTimer.restart()
+                                Timer {
+                                    id: menuCloseTimer; interval: 400
+                                    onTriggered: if (root.themeMenuOpenFor === modelData.snake) root.themeMenuOpenFor = ""
+                                }
+                                // menu de contexto (clique direito): Favoritar / Desfavoritar
+                                PopupWindow {
+                                    anchor.item: themeCard
+                                    anchor.edges: Edges.Bottom
+                                    anchor.gravity: Edges.Bottom
+                                    implicitWidth: 160
+                                    implicitHeight: menuCol.implicitHeight + 10
+                                    visible: root.themeMenuOpenFor === modelData.snake
+                                    color: "transparent"
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 10
+                                        color: theme.bg
+                                        border.color: Qt.alpha(theme.accent, 0.25); border.width: 1
+                                        HoverHandler { id: menuAreaHover }
+                                        ColumnLayout {
+                                            id: menuCol
+                                            anchors.fill: parent; anchors.margins: 5; spacing: 2
+                                            Rectangle {
+                                                Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                                                color: favRowHov.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                                                HoverHandler { id: favRowHov }
+                                                RowLayout {
+                                                    anchors.fill: parent; anchors.leftMargin: 9; anchors.rightMargin: 9; spacing: 8
+                                                    Text {
+                                                        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                        color: theme.accent; text: "󰓎"
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12
+                                                        text: themeCard.fav ? "Desfavoritar" : "Favoritar"
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: root.toggleFav(modelData.snake)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
