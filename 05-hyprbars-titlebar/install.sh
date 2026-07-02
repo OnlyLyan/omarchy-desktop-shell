@@ -6,6 +6,7 @@ append_once(){ local marker="$1" dest="$2" frag="$3"; mkdir -p "$(dirname "$dest
 install -Dm644 hyprbars.conf ~/.config/hypr/hyprbars.conf
 install -Dm755 window-minimize ~/.local/bin/window-minimize
 append_once "hyprbars.conf" ~/.config/hypr/hyprland.conf hyprland-source.snippet.conf
+append_once "layout = master" ~/.config/hypr/looknfeel.conf looknfeel.snippet.conf
 append_once "window-minimize restore" ~/.config/hypr/bindings.conf bindings.snippet.conf
 append_once "hyprpm reload -n" ~/.config/hypr/autostart.conf autostart.snippet.conf
 echo "Instale o plugin: hyprpm add https://github.com/hyprwm/hyprland-plugins && hyprpm enable hyprbars && hyprpm reload"
