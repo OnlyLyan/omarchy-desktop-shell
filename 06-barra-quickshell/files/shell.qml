@@ -1463,6 +1463,23 @@ ShellRoot {
     // UMA janela fullscreen: backdrop (fecha ao clicar fora) + card por cima.
     // (Duas janelas layer-shell separadas na mesma camada brigavam pelo z-order
     // e o backdrop engolia todos os cliques do card.)
+    // backdrop de dismiss nos OUTROS monitores: o card vive so no acScreen, entao
+    // sem isto um clique em qualquer outro monitor nao fecha a central.
+    Variants {
+        model: Quickshell.screens
+        PanelWindow {
+            property var modelData
+            screen: modelData
+            visible: root.acOpen && root.acScreen && modelData.name !== root.acScreen.name
+            anchors { top: true; bottom: true; left: true; right: true }
+            color: "transparent"
+            exclusionMode: ExclusionMode.Ignore
+            WlrLayershell.layer: WlrLayer.Overlay
+            WlrLayershell.namespace: "qsbar-ac-dismiss"
+            MouseArea { anchors.fill: parent; onClicked: root.acOpen = false }
+        }
+    }
+
     PanelWindow {
         id: ac
         // fica mapeada enquanto a animacao de fechar roda (ate o fade terminar)
