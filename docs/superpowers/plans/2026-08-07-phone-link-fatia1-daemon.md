@@ -1270,6 +1270,64 @@ async def test_session_read_packet_retorna_none_no_fim_do_stream():
     await srv.wait_closed()
 
 
+async def test_session_aceita_linha_grande_quando_o_limite_e_configurado():
+    """Prova que o limite de 1MB do protocolo vale de ponta a ponta.
+
+    O StreamReader do asyncio tem buffer default de 64KB. Sem passar limit,
+    uma linha entre 64KB e 1MB estoura ValueError dentro do readline, antes de
+    qualquer validacao do protocolo. Importa porque a fatia 2 manda notificacao
+    com icone, e um PNG em base64 passa de 64KB sem esforco.
+    """
+    grande = "z" * 200_000
+
+    async def handler(reader, writer):
+        sessao = transport.Session(reader, writer, address="127.0.0.1")
+        packet = await sessao.read_packet()
+        await sessao.send(
+            protocol.make_packet("phone.pong", {"tamanho": len(packet["body"]["dados"])})
+        )
+        await sessao.close()
+
+    srv = await asyncio.start_server(
+        handler, "127.0.0.1", 0, limit=protocol.MAX_LINE_BYTES
+    )
+    porta = srv.sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", porta, limit=protocol.MAX_LINE_BYTES
+    )
+    cliente = transport.Session(reader, writer, address="127.0.0.1")
+    await cliente.send(protocol.make_packet("teste.grande", {"dados": grande}))
+    resposta = await cliente.read_packet()
+    await cliente.close()
+    srv.close()
+    await srv.wait_closed()
+
+    assert resposta["body"]["tamanho"] == len(grande)
+
+
+async def test_session_traduz_estouro_de_buffer_em_erro_de_protocolo():
+    """Linha acima do buffer vira ProtocolError, nunca ValueError cru.
+
+    O laco de leitura da Task 7 so sabe tratar ProtocolError e fim de stream.
+    """
+
+    async def handler(reader, writer):
+        writer.write(b"y" * 100_000)  # sem newline, estoura o buffer pequeno
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.close()
+
+    srv = await asyncio.start_server(handler, "127.0.0.1", 0, limit=4096)
+    porta = srv.sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection("127.0.0.1", porta, limit=4096)
+    sessao = transport.Session(reader, writer, address="127.0.0.1")
+    with pytest.raises(protocol.ProtocolError):
+        await sessao.read_packet()
+    await sessao.close()
+    srv.close()
+    await srv.wait_closed()
+
+
 async def test_session_propaga_erro_de_protocolo_em_linha_invalida():
     async def handler(reader, writer):
         writer.write(b"isso nao e json\n")
@@ -1373,11 +1431,19 @@ class Session:
             await self._writer.drain()
 
     async def read_packet(self):
-        linha = await self._reader.readline()
+        try:
+            linha = await self._reader.readline()
+        except ValueError as exc:
+            # StreamReader estoura ValueError quando a linha passa do limite do
+            # buffer. Sem esta traducao vazaria um tipo que o laco de leitura nao
+            # espera. Defesa em profundidade: quem abre a conexao ja passa
+            # limit=MAX_LINE_BYTES, entao chegar aqui significa linha alem do
+            # que o protocolo admite.
+            raise protocol.ProtocolError(f"linha acima do limite do buffer: {exc}") from exc
         if not linha:
             return None
-        if len(linha) >= protocol.MAX_LINE_BYTES:
-            raise protocol.ProtocolError("linha acima do limite")
+        # O tamanho e validado uma vez so, dentro de decode. Repetir a checagem
+        # aqui ja custou uma divergencia de um byte entre os dois lugares.
         return protocol.decode(linha)
 
     async def close(self):
@@ -1631,7 +1697,11 @@ class Transport:
             self._cfg.cert_path, self._cfg.key_path, self._trust.ca_data()
         )
         self._server = await asyncio.start_server(
-            self._on_inbound, "0.0.0.0", self._cfg.tcp_port, ssl=ctx
+            self._on_inbound, "0.0.0.0", self._cfg.tcp_port, ssl=ctx,
+            # Sem isto o buffer do StreamReader seria o default de 64KB, e o
+            # limite de 1MB do protocolo nao valeria de verdade: linhas entre os
+            # dois estourariam ValueError no readline.
+            limit=protocol.MAX_LINE_BYTES,
         )
 
     async def stop(self):
@@ -1664,7 +1734,9 @@ class Transport:
             self._cfg.cert_path, self._cfg.key_path, present_cert=bool(conhecido_pem)
         )
         try:
-            reader, writer = await asyncio.open_connection(host, port, ssl=ctx)
+            reader, writer = await asyncio.open_connection(
+                host, port, ssl=ctx, limit=protocol.MAX_LINE_BYTES
+            )
         except (OSError, ssl.SSLError) as exc:
             log.warning("falha ao conectar em %s:%s: %s", host, port, exc)
             return None
