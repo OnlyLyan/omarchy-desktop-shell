@@ -98,12 +98,36 @@ doméstica sem avahi configurado. Para redes que bloqueiam broadcast, existe o e
 
 ## Canal seguro
 
-Quem abre a conexão TCP é o cliente TLS. Ambos apresentam certificado auto-assinado gerado
-na primeira execução. TLS 1.3, autenticação mútua.
+Quem abre a conexão TCP é o cliente TLS. Ambos usam certificado auto-assinado gerado na
+primeira execução, curva P-256, validade de 10 anos, com `CA:TRUE`, o que permite que o
+certificado sirva de âncora de confiança de si mesmo.
 
-A verificação de cadeia é desligada de propósito e substituída por comparação de fingerprint
-SHA-256 contra `devices.json`. Esse é o modelo correto para confiança direta entre dois
-aparelhos sem autoridade certificadora.
+A verificação de cadeia contra autoridade certificadora é substituída por comparação de
+fingerprint SHA-256 contra `devices.json`. Esse é o modelo correto para confiança direta
+entre dois aparelhos sem CA.
+
+O modo do handshake depende de já haver pareamento, e a diferença foi verificada
+experimentalmente com `ssl` da stdlib em 2026-08-07:
+
+**Já pareado, autenticação mútua real.** O servidor usa `verify_mode = CERT_OPTIONAL` e
+carrega os certificados pareados via `load_verify_locations(cadata=...)`. O cliente
+apresenta seu certificado com `load_cert_chain`. Os dois lados obtêm o certificado do outro
+por `getpeercert(binary_form=True)` e comparam o fingerprint com o armazenado. Divergência
+derruba a conexão.
+
+**Primeiro pareamento, comparação numérica.** O servidor ainda não confia em ninguém, então
+usa `verify_mode = CERT_NONE` e **não** recebe certificado do cliente. O cliente, esse sim,
+recebe o do servidor e já pode conferir. Para fechar o lado que falta, o cliente inclui o
+próprio certificado em PEM no corpo do `pair.request`, e é dele que o servidor deriva o
+código.
+
+A segurança do primeiro pareamento vem da comparação numérica feita por você, o mesmo
+princípio do numeric comparison do Bluetooth: um atacante no meio produz códigos diferentes
+nos dois aparelhos, e a divergência fica visível antes de qualquer dado trafegar.
+
+**Estado assimétrico** (um lado pareou, o outro não) faz a validação falhar e a conexão
+cair, com log explícito. A saída é `phonectl unpair` e novo pareamento. É raro e preferível
+a degradar silenciosamente para o modo sem autenticação.
 
 Aparelho não pareado completa o handshake TLS, mas o daemon aceita dele **somente** pacotes
 de tipo `pair.*`. Qualquer outro tipo derruba a conexão. É essa regra que impede alguém na
@@ -111,7 +135,9 @@ mesma rede de enviar dados antes da confirmação do usuário.
 
 ### Pareamento
 
-1. Cliente envia `pair.request`.
+1. Cliente envia `pair.request` com o próprio certificado em PEM no corpo. O servidor
+   calcula o fingerprint do cliente a partir dele; o do servidor o cliente já obteve pelo
+   próprio handshake TLS.
 2. Ambos derivam o código de confirmação: os dois fingerprints são ordenados
    lexicograficamente, concatenados, passados por SHA-256, e os 6 primeiros caracteres
    hexadecimais em maiúsculo viram o código. A ordenação garante que os dois lados cheguem
@@ -139,8 +165,8 @@ Tipos desta fatia:
 | Tipo | Direção | Body |
 |------|---------|------|
 | `identity` | ambas | dados do aparelho (ver Descoberta) |
-| `pair.request` | ambas | `{}` |
-| `pair.accept` | ambas | `{}` |
+| `pair.request` | ambas | `{"certificate": "<PEM do remetente>"}` |
+| `pair.accept` | ambas | `{"certificate": "<PEM do remetente>"}` |
 | `pair.reject` | ambas | `{"reason": "<string>"}` |
 | `phone.ping` | ambas | `{}` |
 | `phone.pong` | ambas | `{"echo_id": "<id do ping>"}` |
