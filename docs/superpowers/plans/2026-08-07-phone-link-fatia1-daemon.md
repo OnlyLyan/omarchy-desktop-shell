@@ -1754,6 +1754,10 @@ class Transport:
             address=endereco[0] if endereco else "?",
             peer_fingerprint=peer_fingerprint(writer),
         )
+        # A troca de identidade e mutua. Sem isto, quem abriu a conexao nunca
+        # descobre nosso device_id, sua tabela de sessoes fica vazia e o
+        # request_pair falha em silencio por nao achar a sessao.
+        await sessao.send(protocol.make_packet("identity", self._identity.to_body()))
         await self._laco_de_leitura(sessao)
 
     def _spawn(self, corotina):
