@@ -15,18 +15,36 @@ from . import pairing, protocol
 log = logging.getLogger(__name__)
 
 
+def apply_trust(ctx, ca_data):
+    """Poe o contexto do servidor em dia com o truststore.
+
+    Chamado no start e de novo a cada mudanca do truststore. Mutar um
+    SSLContext que ja esta servindo vale para as conexoes seguintes: medido
+    nesta maquina com Python 3.14.6, um cliente que antes nem era questionado
+    passa a apresentar certificado na conexao logo depois da mutacao. Criar um
+    contexto novo no lugar nao serviria: o asyncio captura o objeto no momento
+    em que comeca a servir, e trocar o atributo do Server depois nao tem efeito.
+    """
+    if not ca_data:
+        # Nenhum aparelho confiavel ainda: aceita sem certificado de cliente,
+        # e o gate de pareamento em Transport limita o que pode trafegar.
+        ctx.verify_mode = ssl.CERT_NONE
+        return
+    # Ha aparelhos pareados: pede e valida o certificado do cliente.
+    ctx.verify_mode = ssl.CERT_OPTIONAL
+    # load_verify_locations so acrescenta ancora, nunca remove. Um aparelho
+    # esquecido por unpair continua validando no TLS ate o daemon reiniciar, o
+    # que e inofensivo: quem decide confianca e _registra_identidade, e la o
+    # device_id nao consta mais no truststore, entao a sessao fica como nao
+    # pareada e so pacotes pair.* passam.
+    ctx.load_verify_locations(cadata=ca_data)
+
+
 def build_server_context(cert_path, key_path, ca_data):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.load_cert_chain(str(cert_path), str(key_path))
-    if ca_data:
-        # Ha aparelhos pareados: exige e valida o certificado do cliente.
-        ctx.verify_mode = ssl.CERT_OPTIONAL
-        ctx.load_verify_locations(cadata=ca_data)
-    else:
-        # Nenhum aparelho confiavel ainda: aceita sem certificado de cliente,
-        # e o gate de pareamento em Transport limita o que pode trafegar.
-        ctx.verify_mode = ssl.CERT_NONE
+    apply_trust(ctx, ca_data)
     return ctx
 
 
@@ -37,6 +55,9 @@ def build_client_context(cert_path, key_path, present_cert):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     if present_cert:
+        # load_cert_chain nao envia nada sozinho: o certificado so sai se o
+        # servidor pedir. Por isso a decisao de carregar e a decisao de
+        # apresentar, e ela precisa olhar para o par especifico.
         ctx.load_cert_chain(str(cert_path), str(key_path))
     return ctx
 
@@ -108,13 +129,19 @@ PONG = "phone.pong"
 
 
 class _PendingPair:
-    """Pareamento em andamento: guarda o que cada lado ja decidiu."""
+    """Pareamento em andamento: guarda o que cada lado ja decidiu.
 
-    def __init__(self, session, peer_fingerprint, code, iniciado_por_nos):
+    peer_fingerprint e code comecam vazios quando o pedido sai do lado que e
+    servidor de TLS: nesse sentido o certificado do outro so chega dentro do
+    pair.accept, e so entao existe codigo para o usuario comparar.
+    """
+
+    def __init__(self, session, peer_fingerprint, iniciado_por_nos, pem=None):
         self.session = session
         self.peer_fingerprint = peer_fingerprint
-        self.code = code
+        self.code = None
         self.iniciado_por_nos = iniciado_por_nos
+        self.pem = pem
         self.local_ok = False
         self.remoto_ok = False
         self.timer = None
@@ -127,6 +154,7 @@ class Transport:
         self._identity = identity
         self._on_event = on_event
         self._server = None
+        self._server_ctx = None
         self._sessions = {}
         self._pending = {}
         self._tarefas = set()
@@ -143,11 +171,11 @@ class Transport:
             self._cfg.cert_path, self._cfg.key_path, self._cfg.device_id
         )
         self._cert_pem = self._cfg.cert_path.read_text()
-        ctx = build_server_context(
+        self._server_ctx = build_server_context(
             self._cfg.cert_path, self._cfg.key_path, self._trust.ca_data()
         )
         self._server = await asyncio.start_server(
-            self._on_inbound, "0.0.0.0", self._cfg.tcp_port, ssl=ctx,
+            self._on_inbound, "0.0.0.0", self._cfg.tcp_port, ssl=self._server_ctx,
             # Sem isto o buffer do StreamReader seria o default de 64KB, e o
             # limite de 1MB do protocolo nao valeria de verdade: linhas entre os
             # dois estourariam ValueError no readline.
@@ -177,19 +205,43 @@ class Transport:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        self._server_ctx = None
+
+    def _acompanha_truststore(self):
+        """Refaz a confianca do listener depois de mexer no truststore.
+
+        Sem isto o listener fica com a foto tirada no start: quem pareou agora
+        reconecta de fora, chega sem certificado porque o servidor nunca pediu,
+        e _registra_identidade recusa. Em toda tentativa, ate reiniciar o
+        daemon.
+        """
+        if self._server_ctx is not None:
+            apply_trust(self._server_ctx, self._trust.ca_data())
 
     def sessions(self):
         return list(self._sessions.values())
 
     # ---------- conexao ----------
 
-    async def connect(self, host, port):
-        conhecido_pem = None
-        for device in self._trust.all():
-            conhecido_pem = device.certificate
-            break
+    async def connect(self, host, port, device_id=None):
+        """Abre a conexao como cliente de TLS.
+
+        O certificado so vai junto quando o par ja e conhecido. Apresentar
+        certificado a quem ainda nao confia em voce derruba o handshake, e a
+        recusa acontece abaixo do _on_inbound, sem log em nenhum dos dois
+        lados: era assim que um aparelho ja pareado com outra maquina ficava
+        impedido de parear aqui.
+        """
+        if device_id is not None:
+            apresenta = self._trust.get(device_id) is not None
+        else:
+            # Conexao manual por IP (phonectl connect): nao da para saber com
+            # quem estamos falando, entao vale o palpite antigo, existir algum
+            # pareamento significa que provavelmente estamos rediscando para
+            # ele. Quem chega pela descoberta sempre informa o device_id.
+            apresenta = bool(self._trust.all())
         ctx = build_client_context(
-            self._cfg.cert_path, self._cfg.key_path, present_cert=bool(conhecido_pem)
+            self._cfg.cert_path, self._cfg.key_path, present_cert=apresenta
         )
         try:
             reader, writer = await asyncio.open_connection(
@@ -279,7 +331,7 @@ class Transport:
             case _ if tipo == PAIR_REQUEST:
                 await self._on_pair_request(sessao, packet)
             case _ if tipo == PAIR_ACCEPT:
-                await self._on_pair_accept(sessao)
+                await self._on_pair_accept(sessao, packet)
             case _ if tipo == PAIR_REJECT:
                 self._cancela_pendente(sessao.device_id, packet["body"].get("reason", "recusado"))
             case _ if tipo == PING:
@@ -359,12 +411,18 @@ class Transport:
         sessao = self._sessions.get(device_id)
         if sessao is None or sessao.paired:
             return False
+        # A pendencia nasce antes do envio de proposito. Ao contrario, um erro
+        # aqui deixaria o outro lado exibindo codigo de um pareamento que deste
+        # lado nao existe, e confirmar no celular nao faria nada, para sempre.
+        #
+        # peer_fingerprint so vem preenchido quando nos somos o cliente de TLS.
+        # Sendo o servidor, o canal nao carrega o certificado do outro lado, e a
+        # pendencia fica sem fingerprint e sem codigo ate o pair.accept chegar
+        # com o PEM dentro.
+        self._abre_pendente(sessao, sessao.peer_fingerprint, iniciado_por_nos=True)
         await sessao.send(
             protocol.make_packet(PAIR_REQUEST, {"certificate": self._cert_pem})
         )
-        # O certificado do outro lado veio pelo proprio handshake TLS, ja que
-        # aqui nos somos o cliente.
-        self._abre_pendente(sessao, sessao.peer_fingerprint, iniciado_por_nos=True)
         return True
 
     async def _on_pair_request(self, sessao, packet):
@@ -398,25 +456,43 @@ class Transport:
             # novo, que ainda estava dentro do proprio prazo. Acontece com dois
             # request_pair seguidos, um duplo clique na UI da fatia 2 basta.
             anterior.timer.cancel()
-        codigo = pairing.pair_code(
-            pairing.fingerprint_of_file(self._cfg.cert_path), fingerprint
-        )
-        pendente = _PendingPair(sessao, fingerprint, codigo, iniciado_por_nos)
-        pendente.pem = pem
+        pendente = _PendingPair(sessao, fingerprint, iniciado_por_nos, pem=pem)
         pendente.timer = asyncio.get_running_loop().call_later(
             self._cfg.pair_timeout,
             lambda: self._cancela_pendente(sessao.device_id, "timeout"),
         )
         self._pending[sessao.device_id] = pendente
+        if fingerprint is not None:
+            self._publica_codigo(pendente)
+        return pendente
+
+    def _publica_codigo(self, pendente):
+        """Deriva o codigo e pede para a UI exibir.
+
+        Separado de _abre_pendente porque no sentido servidor para cliente o
+        codigo so pode ser calculado la na frente, quando o certificado do
+        outro lado chega no corpo do pair.accept.
+        """
+        pendente.code = pairing.pair_code(
+            pairing.fingerprint_of_file(self._cfg.cert_path),
+            pendente.peer_fingerprint,
+        )
         self._emit("pair.prompt", {
-            "device_id": sessao.device_id,
-            "name": sessao.name,
-            "code": codigo,
+            "device_id": pendente.session.device_id,
+            "name": pendente.session.name,
+            "code": pendente.code,
         })
 
     async def confirm_pair(self, device_id, accept):
         pendente = self._pending.get(device_id)
         if pendente is None:
+            return False
+        if accept and pendente.code is None:
+            # Aceitar antes de existir codigo seria aceitar sem ter comparado
+            # nada, que e exatamente a unica garantia do primeiro pareamento.
+            log.warning(
+                "confirmacao de %s chegou antes do codigo existir", device_id
+            )
             return False
         if not accept:
             await pendente.session.send(
@@ -431,18 +507,64 @@ class Transport:
         self._talvez_conclui(device_id)
         return True
 
-    async def _on_pair_accept(self, sessao):
+    async def _on_pair_accept(self, sessao, packet):
         pendente = self._pending.get(sessao.device_id)
         if pendente is None:
             return
+        pem = packet["body"].get("certificate")
+        if pendente.peer_fingerprint is None:
+            # Nos somos o servidor de TLS: o certificado do outro lado nao veio
+            # pelo canal, e este pacote e a unica entrega dele.
+            if not await self._adota_certificado(pendente, sessao, pem):
+                return
+        elif isinstance(pem, str):
+            # O canal ja trouxe o certificado: o do pacote tem que ser o mesmo,
+            # senao alguem esta aceitando com credencial de terceiro.
+            try:
+                fingerprint = pairing.fingerprint_from_pem(pem)
+            except pairing.CertificateError:
+                fingerprint = None
+            if fingerprint != pendente.peer_fingerprint:
+                await sessao.send(
+                    protocol.make_packet(PAIR_REJECT, {"reason": "certificado divergente"})
+                )
+                self._cancela_pendente(sessao.device_id, "certificado divergente")
+                return
         pendente.remoto_ok = True
         self._talvez_conclui(sessao.device_id)
+
+    async def _adota_certificado(self, pendente, sessao, pem):
+        """Preenche fingerprint, PEM e codigo a partir do PEM do pair.accept."""
+        if not isinstance(pem, str):
+            await sessao.send(
+                protocol.make_packet(PAIR_REJECT, {"reason": "certificado ausente"})
+            )
+            self._cancela_pendente(sessao.device_id, "certificado ausente")
+            return False
+        try:
+            pendente.peer_fingerprint = pairing.fingerprint_from_pem(pem)
+        except pairing.CertificateError as exc:
+            await sessao.send(
+                protocol.make_packet(PAIR_REJECT, {"reason": f"certificado invalido: {exc}"})
+            )
+            self._cancela_pendente(sessao.device_id, f"certificado invalido: {exc}")
+            return False
+        pendente.pem = pem
+        sessao.peer_certificate = pem
+        self._publica_codigo(pendente)
+        return True
 
     def _talvez_conclui(self, device_id):
         pendente = self._pending.get(device_id)
         if pendente is None or not (pendente.local_ok and pendente.remoto_ok):
             return
-        pem = getattr(pendente, "pem", None) or self._pem_do_handshake(pendente.session)
+        if pendente.peer_fingerprint is None:
+            # Sem fingerprint nao ha o que gravar nem o que comparar depois.
+            # Chegar aqui significaria concluir um pareamento sem identidade.
+            log.warning("pareamento com %s sem fingerprint, cancelando", device_id)
+            self._cancela_pendente(device_id, "certificado ausente")
+            return
+        pem = pendente.pem or self._pem_do_handshake(pendente.session)
         self._trust.add(pairing.Device(
             device_id=device_id,
             name=pendente.session.name or device_id,
@@ -450,6 +572,7 @@ class Transport:
             certificate=pem,
         ))
         self._trust.save()
+        self._acompanha_truststore()
         pendente.session.paired = True
         if pendente.timer:
             pendente.timer.cancel()
@@ -481,6 +604,7 @@ class Transport:
         removido = self._trust.remove(device_id)
         if removido:
             self._trust.save()
+            self._acompanha_truststore()
             sessao = self._sessions.get(device_id)
             if sessao:
                 await sessao.close()
@@ -519,7 +643,7 @@ class Transport:
         proibido_ate = self._backoff.get(identity.device_id, (0.0, 0.0))[1]
         if agora < proibido_ate:
             return
-        sessao = await self.connect(host, identity.port)
+        sessao = await self.connect(host, identity.port, identity.device_id)
         if sessao is None:
             self._proximo_backoff(identity.device_id)
         else:

@@ -38,7 +38,10 @@ Quickshell.Io serve bem para isso).
   de 6 caracteres derivado dos dois fingerprints ordenados (por isso da o mesmo codigo nos dois
   aparelhos, nao importa quem iniciou). O usuario confere visualmente que os dois mostram o mesmo
   codigo e confirma dos dois lados. So depois disso o aparelho vira confiavel e o gate de
-  pareamento libera qualquer pacote que nao seja `pair.*`.
+  pareamento libera qualquer pacote que nao seja `pair.*`. Quando quem pede o pareamento e o lado
+  que **recebeu** a conexao, o codigo desse lado so aparece depois que o outro aceita: e o
+  `pair.accept` que traz o certificado dele. Nesse sentido o `pair.prompt` chega mais tarde de um
+  lado que do outro, e confirmar antes de ver o codigo e recusado de proposito.
 - **Protocolo de linha**: cada pacote e uma linha JSON UTF-8 com `id`, `type`, `ts` e `body`,
   terminada em `\n`, com limite de 1 MiB por linha. Mesmo formato no socket TCP (rede) e no unix
   socket (IPC local): um serializador so, `phoned/protocol.py`.
@@ -52,7 +55,27 @@ do corpo do pacote JSON*, em vez de depender do handshake TLS para entrega-lo: e
 o outro lado enxergar o certificado antes de existir qualquer razao para confiar nele. A seguranca
 do pareamento nao vem do TLS nessa etapa, vem da comparacao visual do codigo de 6 caracteres pelo
 usuario. So depois que os dois aceitam e que o certificado entra para a lista de confiaveis
-(`devices.json`) e passa a ser exigido (`ssl.CERT_OPTIONAL`) nas proximas conexoes.
+(`devices.json`).
+
+A partir dai o certificado de cliente passa a ser pedido (`ssl.CERT_OPTIONAL`) **na mesma hora**,
+sem esperar reinicio: o contexto TLS do listener e atualizado toda vez que o `devices.json` muda,
+no pareamento e no `unpair`. Mutar o `SSLContext` que ja esta servindo vale para as conexoes
+seguintes, medido nesta maquina com Python 3.14.6. Sem isso o listener ficava com a foto tirada
+na subida, e o aparelho recem pareado que reconectasse de fora era recusado com `consta pareado
+mas nao apresentou certificado` em toda tentativa, ate o daemon reiniciar.
+
+Mesmo sentido do outro lado: **o certificado so e apresentado a um par que ja esta no
+`devices.json`**. `load_cert_chain` nao envia nada sozinho, o certificado so sai se o servidor
+pedir, entao carregar a cadeia e decidir apresenta-la. Apresentar a quem ainda nao te conhece
+derruba o handshake dentro do OpenSSL, sem log em nenhum dos dois lados, e era assim que um
+aparelho ja pareado com outra maquina ficava impedido de parear aqui. **Esta e uma regra do
+protocolo, e o app Android da fatia 2 precisa segui-la tambem.**
+
+Limitacao conhecida: o `phonectl connect <ip>` manual nao sabe com quem esta falando antes de
+conectar, entao usa o palpite "havendo algum pareamento, provavelmente estou rediscando para
+ele", e apresenta o certificado. Parear um aparelho *novo* numa rede que bloqueia broadcast,
+tendo ja outro aparelho pareado, nao funciona por esse caminho. Pela descoberta funciona, porque
+ai o `device_id` do outro lado e conhecido antes do handshake.
 
 ## Arquivos
 
@@ -62,7 +85,7 @@ usuario. So depois que os dois aceitam e que o certificado entra para a lista de
   fatia 2, sem importar o pacote `phoned`, de proposito, para manter o contrato de IPC honesto).
 - `files/phoned.service` -> `~/.config/systemd/user/phoned.service` (unit systemd, com
   endurecimento: `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges`, etc.)
-- `files/tests/` -> suite de 108 testes (`pytest` + `pytest-asyncio`), inclusive um teste de
+- `files/tests/` -> suite de 112 testes (`pytest` + `pytest-asyncio`), inclusive um teste de
   integracao ponta a ponta com dois daemons completos em loopback (`test_integracao_loopback.py`),
   que faz o papel do celular real enquanto o app Android nao existe.
 
@@ -242,7 +265,7 @@ vem por broadcast).
 cd files && python -m pytest tests/ -v
 ```
 
-108 testes, incluindo `test_integracao_loopback.py`, que sobe dois daemons completos no mesmo
+112 testes, incluindo `test_integracao_loopback.py`, que sobe dois daemons completos no mesmo
 host (dois `state_dir`/`runtime_dir` distintos) e faz descoberta, pareamento e canal TLS ponta a
 ponta por loopback. E o substituto do celular real enquanto o app Android nao existe: cobre
 exatamente os mesmos caminhos de codigo que uma conexao de verdade exerceria.

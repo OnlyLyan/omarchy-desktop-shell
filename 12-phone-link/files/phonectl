@@ -14,9 +14,31 @@ import uuid
 from pathlib import Path
 
 
+# Espelha protocol.MAX_LINE_BYTES do phoned. Literal de proposito: este arquivo
+# nao importa o pacote phoned, para o contrato de IPC continuar honesto. Sem
+# passar isto para o open_unix_connection, o buffer do StreamReader seria o
+# default de 64KB, e uma resposta grande do daemon, que pode escrever ate 1MiB,
+# viraria LimitOverrunError cru antes de qualquer parse.
+MAX_LINE_BYTES = 1024 * 1024
+
+
+class RespostaGrande(Exception):
+    """Linha vinda do daemon acima do limite de linha do protocolo."""
+
+
 def caminho_padrao():
     base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(base) / "phone" / "ipc.sock"
+
+
+async def le_linha(reader):
+    try:
+        return await reader.readline()
+    except ValueError as exc:
+        # O StreamReader estoura ValueError quando a linha passa do buffer.
+        # Com MAX_LINE_BYTES configurado acima, chegar aqui significa que o
+        # daemon furou o proprio limite de linha. Traduzir evita traceback cru.
+        raise RespostaGrande(str(exc)) from exc
 
 
 def pacote(tipo, corpo=None):
@@ -28,13 +50,15 @@ def pacote(tipo, corpo=None):
 
 
 async def pergunta(caminho, tipo, corpo=None):
-    reader, writer = await asyncio.open_unix_connection(str(caminho))
+    reader, writer = await asyncio.open_unix_connection(
+        str(caminho), limit=MAX_LINE_BYTES
+    )
     try:
         linha_pedido, meu_id = pacote(tipo, corpo)
         writer.write(linha_pedido.encode("utf-8"))
         await writer.drain()
         while True:
-            linha = await reader.readline()
+            linha = await le_linha(reader)
             if not linha:
                 raise ConnectionError("phoned fechou a conexao sem responder")
             resposta = json.loads(linha)
@@ -56,10 +80,12 @@ async def pergunta(caminho, tipo, corpo=None):
 
 
 async def observa(caminho):
-    reader, writer = await asyncio.open_unix_connection(str(caminho))
+    reader, writer = await asyncio.open_unix_connection(
+        str(caminho), limit=MAX_LINE_BYTES
+    )
     try:
         while True:
-            linha = await reader.readline()
+            linha = await le_linha(reader)
             if not linha:
                 return
             evento = json.loads(linha)
@@ -163,6 +189,10 @@ def main(argv=None):
             "Tente: systemctl --user status phoned",
             file=sys.stderr,
         )
+        return 1
+    except RespostaGrande as exc:
+        print(f"phonectl: resposta do phoned acima do limite de linha ({exc})",
+              file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

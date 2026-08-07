@@ -17,12 +17,17 @@ class Par:
         return [p for k, p in self.eventos if k == kind]
 
 
-async def monta(tmp_path, nome, porta, **overrides):
+async def monta(tmp_path, nome, porta, confia=None, **overrides):
     """Sobe um Transport isolado.
 
     Os overrides existem porque mudar cfg depois de start() nao adianta para
     intervalos: o laco de heartbeat ja entrou no primeiro sleep com o valor
     antigo. Quem testa temporizacao precisa configurar antes de subir.
+
+    confia recebe pares (device_id, caminho do certificado) gravados no
+    truststore ANTES do start. Precisa ser antes porque o contexto TLS do
+    servidor nasce em start(): so com truststore ja povoado o listener sobe
+    exigindo certificado de cliente.
     """
     parametros = {
         "name": nome, "tcp_port": porta, "discovery_port": porta,
@@ -36,6 +41,14 @@ async def monta(tmp_path, nome, porta, **overrides):
     pairing.ensure_certificate(cfg.cert_path, cfg.key_path, cfg.device_id)
     trust = pairing.TrustStore(cfg.devices_path)
     trust.load()
+    for device_id, caminho in confia or []:
+        trust.add(pairing.Device(
+            device_id=device_id, name=device_id,
+            fingerprint=pairing.fingerprint_of_file(caminho),
+            certificate=caminho.read_text(),
+        ))
+    if confia:
+        trust.save()
     identity = discovery.Identity(
         device_id=cfg.device_id, name=nome, device_type="desktop",
         port=porta, protocol_version=config.PROTOCOL_VERSION, capabilities=["ping"],
@@ -46,14 +59,27 @@ async def monta(tmp_path, nome, porta, **overrides):
     return Par(cfg, trust, identity, tr, eventos)
 
 
-async def parear(a, b):
-    """Faz a parear com b, com confirmacao dos dois lados."""
-    await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+async def parear(a, b, conecta=None):
+    """Faz a parear com b, com confirmacao dos dois lados.
+
+    Quem pede o pareamento e sempre a. Quem abre o socket TCP e conecta, que
+    por padrao tambem e a. Passando conecta=b o pedido passa a sair do lado
+    que e servidor de TLS, metade da maquina de estados que so esse parametro
+    exercita, e que e justamente a que um celular real usa: quem disca e o
+    aparelho.
+    """
+    conecta = conecta if conecta is not None else a
+    alvo = b if conecta is a else a
+    await conecta.tr.connect("127.0.0.1", alvo.cfg.tcp_port)
     await asyncio.sleep(0.1)
-    await a.tr.request_pair(b.cfg.device_id)
+    assert await a.tr.request_pair(b.cfg.device_id), "a nao conseguiu pedir o pareamento"
     await asyncio.sleep(0.1)
-    await b.tr.confirm_pair(a.cfg.device_id, True)
-    await a.tr.confirm_pair(b.cfg.device_id, True)
+    assert await b.tr.confirm_pair(a.cfg.device_id, True), "b nao tinha o que confirmar"
+    # Quando o pedido sai do lado servidor, o codigo so existe em a depois que
+    # o pair.accept de b chega com o certificado dentro. Sem esta pausa a
+    # confirmacao de a corre na frente do proprio codigo.
+    await asyncio.sleep(0.1)
+    assert await a.tr.confirm_pair(b.cfg.device_id, True), "a nao tinha o que confirmar"
     await asyncio.sleep(0.1)
 
 
@@ -228,6 +254,92 @@ async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
 
         assert b.trust.get(a.cfg.device_id) is None
         assert b.cfg.device_id not in b.tr._pending
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_pareamento_no_sentido_servidor_para_cliente(tmp_path):
+    """Quem pede o pareamento e o lado que NAO abriu a conexao.
+
+    E o sentido que o celular real vai usar: quem disca e o aparelho, e o
+    pedido pode sair do PC. Nesse sentido o canal TLS nao carrega certificado
+    do outro lado (servidor sem truststore nao pede certificado de cliente),
+    entao o fingerprint precisa vir do PEM que o pair.accept traz.
+    """
+    a = await monta(tmp_path, "a", 21121)
+    b = await monta(tmp_path, "b", 21122)
+    try:
+        await parear(a, b, conecta=b)
+
+        assert a.trust.get(b.cfg.device_id) is not None
+        assert b.trust.get(a.cfg.device_id) is not None
+        assert a.trust.get(b.cfg.device_id).fingerprint == pairing.fingerprint_of_file(
+            b.cfg.cert_path
+        )
+        assert a.evento("pair.prompt")[0]["code"] == b.evento("pair.prompt")[0]["code"]
+        assert a.tr.sessions()[0].paired is True
+        assert b.tr.sessions()[0].paired is True
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_par_reconecta_de_fora_e_entra_como_pareado(tmp_path):
+    """Depois de parear, o outro lado disca para nos e e aceito sem reparear.
+
+    O contexto TLS do listener nasce em start(), quando o truststore ainda
+    estava vazio. Se ele nao acompanhar o truststore, o servidor continua sem
+    pedir certificado de cliente, o aparelho recem pareado chega sem
+    fingerprint e e recusado a cada tentativa ate o daemon reiniciar.
+    """
+    a = await monta(tmp_path, "a", 21123)
+    b = await monta(tmp_path, "b", 21124)
+    try:
+        await parear(a, b)
+        for sessao in list(a.tr.sessions()) + list(b.tr.sessions()):
+            await sessao.close()
+        await asyncio.sleep(0.2)
+        assert a.tr.sessions() == [] and b.tr.sessions() == []
+
+        await b.tr.connect("127.0.0.1", a.cfg.tcp_port)
+        await asyncio.sleep(0.3)
+
+        assert [s.device_id for s in a.tr.sessions()] == [b.cfg.device_id]
+        assert a.tr.sessions()[0].paired is True, "reconexao de entrada nao foi aceita"
+        assert b.tr.sessions()[0].paired is True
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_segundo_aparelho_pareia_com_os_dois_truststores_cheios(tmp_path):
+    """Aparelho que ja pareou com outra maquina ainda consegue parear aqui.
+
+    Com truststore nao vazio dos dois lados, apresentar certificado a quem
+    ainda nao te conhece derruba o handshake, e a recusa acontece abaixo do
+    _on_inbound, sem log nenhum. E o bug do segundo aparelho.
+    """
+    outro_cert = tmp_path / "outro-cert.pem"
+    outro_key = tmp_path / "outro-key.pem"
+    pairing.ensure_certificate(outro_cert, outro_key, "outro")
+    a = await monta(tmp_path, "a", 21125, confia=[("velho-do-a", outro_cert)])
+    b = await monta(tmp_path, "b", 21126, confia=[("velho-do-b", outro_cert)])
+    try:
+        await a.tr.ensure_connected(b.identity, "127.0.0.1")
+        await asyncio.sleep(0.2)
+        assert a.tr.sessions(), "o handshake caiu antes de qualquer pareamento"
+
+        assert await a.tr.request_pair(b.cfg.device_id)
+        await asyncio.sleep(0.1)
+        assert await b.tr.confirm_pair(a.cfg.device_id, True)
+        await asyncio.sleep(0.1)
+        assert await a.tr.confirm_pair(b.cfg.device_id, True)
+        await asyncio.sleep(0.1)
+
+        assert a.trust.get(b.cfg.device_id) is not None
+        assert b.trust.get(a.cfg.device_id) is not None
+        assert a.trust.get("velho-do-a") is not None, "o pareamento antigo sumiu"
     finally:
         await a.tr.stop()
         await b.tr.stop()

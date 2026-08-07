@@ -143,6 +143,28 @@ async def test_evento_empurrado_nao_e_confundido_com_resposta(tmp_path):
     assert "ok" in resultado.stdout
 
 
+async def test_resposta_acima_de_64k_nao_estoura_o_buffer(tmp_path):
+    """O buffer default do StreamReader e 64KB e o daemon escreve ate 1MiB.
+
+    Uma listagem grande, ou o `list` de uma casa com varios aparelhos, passa
+    de 64KB sem esforco. Sem limit= no open_unix_connection isso vira
+    LimitOverrunError cru na cara do usuario, antes de qualquer parse.
+    """
+    caminho = tmp_path / "ipc.sock"
+    nome = "z" * 300_000
+    srv = await servidor_falso(caminho, {"list": {"devices": [
+        {"device_id": "cel-1", "name": nome, "paired": True,
+         "connected": True, "address": "192.168.0.5"},
+    ]}})
+    try:
+        resultado = await asyncio.to_thread(roda, caminho, "list")
+    finally:
+        srv.close()
+    assert "Traceback" not in resultado.stderr
+    assert resultado.returncode == 0, resultado.stderr[-400:]
+    assert nome in resultado.stdout
+
+
 async def test_daemon_que_cai_no_meio_nao_da_traceback(tmp_path):
     caminho = tmp_path / "ipc.sock"
 

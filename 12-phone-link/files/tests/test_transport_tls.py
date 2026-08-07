@@ -64,6 +64,13 @@ async def test_cliente_desconhecido_e_recusado_quando_o_servidor_ja_confia_em_ou
     excecao. Verificado nesta maquina com Python 3.14.6 e OpenSSL 3.6.3. Por
     isso o teste observa o efeito, conexao morta e handler nunca invocado, em
     vez de esperar um erro que nunca vem.
+
+    E esta recusa, invisivel para os dois lados, que obriga a regra de
+    Transport.connect: so carregar a cadeia quando o par ja esta no truststore.
+    Apresentar certificado a quem ainda nao te conhece nao degrada para uma
+    sessao nao pareada, mata a conexao. O caminho de quem faz certo, aparelho
+    desconhecido chegando sem certificado num servidor que ja pareou com outro,
+    esta coberto em test_segundo_aparelho_pareia_com_os_dois_truststores_cheios.
     """
     servidor, cliente = par_de_certificados
     terceiro = (tmp_path / "t-cert.pem", tmp_path / "t-key.pem")

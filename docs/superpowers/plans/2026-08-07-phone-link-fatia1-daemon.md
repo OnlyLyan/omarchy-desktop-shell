@@ -1109,7 +1109,7 @@ git commit -m "feat(phone-link): descoberta por broadcast UDP com identidade val
 
 **Interfaces:**
 - Consumes: `protocol`, `pairing`, `discovery.Identity`.
-- Produces: `build_server_context(cert_path, key_path, ca_data: str | None) -> ssl.SSLContext`, `build_client_context(cert_path, key_path, present_cert: bool) -> ssl.SSLContext`, `peer_fingerprint(writer) -> str | None`, `Session` com atributos `device_id`, `name`, `identity`, `peer_fingerprint`, `paired`, `address` e métodos `async send(packet)`, `async close()`, `async read_packet() -> dict | None`.
+- Produces: `apply_trust(ctx, ca_data: str | None) -> None` (ver "Correção pós-revisão final"), `build_server_context(cert_path, key_path, ca_data: str | None) -> ssl.SSLContext`, `build_client_context(cert_path, key_path, present_cert: bool) -> ssl.SSLContext`, `peer_fingerprint(writer) -> str | None`, `Session` com atributos `device_id`, `name`, `identity`, `peer_fingerprint`, `paired`, `address` e métodos `async send(packet)`, `async close()`, `async read_packet() -> dict | None`.
 
 **Nota de fundo, verificada no sistema em 2026-08-07:** com `CERT_NONE` no servidor, `getpeercert(binary_form=True)` retorna `None` porque o cliente não é sequer solicitado a apresentar certificado. Com `CERT_OPTIONAL` mais `load_verify_locations(cadata=...)`, retorna o DER do cliente e a validação é real. O cliente sempre enxerga o certificado do servidor, mesmo com `CERT_NONE`, porque `binary_form=True` devolve o certificado independentemente de validação. É essa assimetria que o modelo de pareamento contorna.
 
@@ -1478,7 +1478,7 @@ git commit -m "feat(phone-link): contextos TLS e sessao que fala pacotes"
 
 **Interfaces:**
 - Consumes: tudo da Task 6, mais `pairing.TrustStore`, `pairing.Device`, `pairing.pair_code`, `discovery.Identity`.
-- Produces: `Transport(cfg, trust, identity, on_event)` com `async start()`, `async stop()`, `async connect(host, port) -> Session | None`, `sessions() -> list[Session]`, `async request_pair(device_id) -> bool`, `async confirm_pair(device_id, accept: bool) -> bool`, `async unpair(device_id) -> bool`. O callback é `on_event(kind: str, payload: dict) -> None`, com `kind` em `{"device.state", "pair.prompt", "pair.result", "pong"}`.
+- Produces: `Transport(cfg, trust, identity, on_event)` com `async start()`, `async stop()`, `async connect(host, port, device_id=None) -> Session | None` (o `device_id` chegou na correção pós-revisão final), `sessions() -> list[Session]`, `async request_pair(device_id) -> bool`, `async confirm_pair(device_id, accept: bool) -> bool`, `async unpair(device_id) -> bool`. O callback é `on_event(kind: str, payload: dict) -> None`, com `kind` em `{"device.state", "pair.prompt", "pair.result", "pong"}`.
 
 **Regra central desta task:** sessão não pareada só aceita pacotes cujo `type` começa com `pair.`. Qualquer outro derruba a conexão. Tipo desconhecido que não seja `pair.` em sessão **pareada** é apenas logado.
 
@@ -3760,6 +3760,88 @@ git commit -m "feat(phone-link): instalador idempotente, unit do systemd e docum
 ```
 
 ---
+
+## Correção pós-revisão final
+
+A revisão do branch inteiro achou três bloqueadores com uma raiz só: **todo teste de
+pareamento dirigia a conexão pelo mesmo lado**. O helper `parear()` sempre fazia
+`a.tr.connect(...)` seguido de `a.tr.request_pair(...)`, então `request_pair` nunca rodou no
+lado que segura o socket de servidor. Metade da máquina de estados nunca foi executada, e é
+exatamente a metade que o celular real usa, já que quem disca costuma ser o aparelho.
+
+### O que estava quebrado
+
+1. **`request_pair` estourava `TypeError` quando somos o servidor de TLS.** Servidor com
+   truststore vazio usa `CERT_NONE`, não pede certificado de cliente, e
+   `sessao.peer_fingerprint` fica `None` em toda sessão de entrada. Esse `None` ia para
+   `pair_code`, que faz `sorted([fp_a, fp_b])`. Pior: o `pair.request` já tinha saído, então o
+   outro lado exibia código de um pareamento que aqui não existia, e confirmar no celular não
+   fazia nada, para sempre.
+2. **O contexto TLS do servidor era uma foto tirada no `start()`.** `_talvez_conclui` gravava
+   no truststore mas não mexia no listener, que seguia `CERT_NONE` pela vida do processo. O
+   aparelho recém pareado reconectava de fora, chegava sem certificado, e
+   `_registra_identidade` recusava com `consta pareado mas nao apresentou certificado`. Em
+   toda tentativa, até reiniciar o daemon.
+3. **`CERT_OPTIONAL` recusava qualquer aparelho que já tivesse pareado com outra máquina.**
+   `CERT_OPTIONAL` significa "não é obrigatório, mas se vier tem que validar", e o cliente
+   carregava a cadeia sempre que confiava em *alguém*, não especificamente naquele par. A
+   recusa acontece abaixo do `_on_inbound`, sem log em nenhum dos dois lados.
+
+### A opção escolhida, e por que a outra não serve
+
+A revisão propôs duas saídas: (1) derivar o fingerprint do PEM quando o canal não carrega um,
+e (2) deixar o servidor em `CERT_NONE` para sempre e autenticar só depois do handshake, em
+`_registra_identidade`.
+
+**Escolhida a opção 1.** A opção 2 não preserva a propriedade de segurança. O certificado de
+cliente do TLS é a única prova de posse de chave que existe neste protocolo: um PEM dentro de
+um pacote é informação pública e não prova nada, e só serve no primeiro pareamento porque o
+usuário compara o código de 6 caracteres visualmente. Com `CERT_NONE` permanente, uma sessão
+de entrada que diz ser um `device_id` já pareado não teria **nada** para
+`_registra_identidade` comparar, e qualquer um na mesma rede passaria por aparelho pareado.
+`_registra_identidade` não "já faz a autenticação": ele compara um fingerprint que, sem
+certificado de cliente, nunca existe.
+
+### O que mudou
+
+- `apply_trust(ctx, ca_data)` põe o contexto do listener em dia com o truststore, e é chamada
+  no `start()`, ao concluir um pareamento e no `unpair`. Mutar o `SSLContext` que já está
+  servindo vale para as conexões seguintes (medido com Python 3.14.6). Criar um contexto novo
+  não serviria: o asyncio captura o objeto no momento em que passa a servir.
+- `connect(host, port, device_id=None)` só carrega o certificado quando o par já é conhecido.
+  `load_cert_chain` não envia nada sozinho, o certificado só sai se o servidor pedir, então
+  carregar é decidir apresentar, e a decisão precisa olhar para o par específico. Sem
+  `device_id` (o `phonectl connect <ip>` manual) vale o palpite antigo: havendo algum
+  pareamento, provavelmente estamos rediscando para ele.
+- `request_pair` abre a pendência **antes** de enviar o pacote, e aceita fingerprint `None`.
+  Nesse caso a pendência nasce sem código, `confirm_pair` recusa aceitar enquanto não houver
+  código, e o `pair.accept` do outro lado traz o PEM que fecha a conta
+  (`_adota_certificado`, depois `_publica_codigo`).
+- `_on_pair_accept` passou a receber o pacote. Quando o canal já trouxe o certificado, o PEM
+  do pacote tem que bater com ele, mesma regra que o `pair.request` já aplicava.
+- `phonectl` passou a abrir o unix socket com `limit=1024*1024` (literal espelhando
+  `protocol.MAX_LINE_BYTES`, já que este arquivo não importa `phoned`) e traduz o `ValueError`
+  do `readline` em mensagem limpa. Era a terceira ocorrência do mesmo bug de limite de linha,
+  depois de `transport.py` e `ipc.py`.
+
+### A regra de protocolo que o app Android precisa seguir
+
+**Não apresente seu certificado a um par que ainda não está no seu truststore.** Um servidor
+com `CERT_OPTIONAL` pede certificado de todo mundo, e não tem como saber quem é o cliente
+antes do handshake; se o cliente responde com um certificado desconhecido, o OpenSSL derruba a
+conexão antes de qualquer código nosso rodar. O daemon já segue a regra por par. Quem chega
+pela descoberta sempre sabe com quem fala, então a decisão é sempre informada.
+
+### Testes acrescentados
+
+- `test_pareamento_no_sentido_servidor_para_cliente`: b conecta, **a** pede o pareamento.
+- `test_par_reconecta_de_fora_e_entra_como_pareado`: pareia, derruba as duas sessões, o par
+  disca de volta e entra como pareado.
+- `test_segundo_aparelho_pareia_com_os_dois_truststores_cheios`: pareamento novo com os dois
+  lados já tendo aparelho conhecido.
+- `test_resposta_acima_de_64k_nao_estoura_o_buffer`: `phonectl` com resposta de 300 KB.
+- `parear(a, b, conecta=...)` e `monta(..., confia=[...])` passaram a existir para os três
+  primeiros. A direção virou parâmetro em vez de constante.
 
 ## Verificação final da fatia
 
