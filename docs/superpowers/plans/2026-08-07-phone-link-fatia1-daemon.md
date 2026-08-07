@@ -2908,10 +2908,14 @@ class Daemon:
         )
 
     async def stop(self):
+        # A descoberta para primeiro, de proposito. Ela e a unica fonte de
+        # tarefas novas aqui: um datagrama que chegue durante o proprio stop
+        # ainda passaria por _on_identity e criaria um ensure_connected orfao,
+        # depois de _tarefas ja ter sido esvaziado.
+        await self._discovery.stop()
         for tarefa in list(self._tarefas):
             tarefa.cancel()
         self._tarefas.clear()
-        await self._discovery.stop()
         await self._transport.stop()
         await self._ipc.stop()
 
