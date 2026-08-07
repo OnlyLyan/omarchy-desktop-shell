@@ -92,6 +92,47 @@ async def test_handler_que_levanta_excecao_vira_pacote_de_erro(tmp_path):
 
     assert resposta["type"] == "error"
     assert "estourou" in resposta["body"]["message"]
+    assert resposta["body"]["request_id"] == "req-3"
+
+
+async def test_linha_gigante_vira_erro_e_nao_mata_a_tarefa(tmp_path):
+    async def handler(command, body):
+        return {"ok": True}
+
+    servidor = ipc.IpcServer(tmp_path / "ipc.sock", handler)
+    await servidor.start()
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "ipc.sock"))
+        writer.write(b"z" * (protocol.MAX_LINE_BYTES + 1))  # sem newline, acima do limite
+        await writer.drain()
+        resposta = protocol.decode(await reader.readline())
+        writer.close()
+    finally:
+        await servidor.stop()
+
+    assert resposta["type"] == "error"
+    assert "limite" in resposta["body"]["message"]
+
+
+async def test_comando_grande_dentro_do_limite_funciona(tmp_path):
+    async def handler(command, body):
+        return {"tamanho": len(body["dados"])}
+
+    servidor = ipc.IpcServer(tmp_path / "ipc.sock", handler)
+    await servidor.start()
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "ipc.sock"))
+        grande = "z" * 200_000
+        writer.write(protocol.encode(
+            protocol.make_packet("teste", {"dados": grande}, packet_id="g1")
+        ))
+        await writer.drain()
+        resposta = protocol.decode(await reader.readline())
+        writer.close()
+    finally:
+        await servidor.stop()
+
+    assert resposta["body"]["tamanho"] == 200_000
 
 
 async def test_socket_orfao_e_removido_na_subida(tmp_path):
