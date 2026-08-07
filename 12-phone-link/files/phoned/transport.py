@@ -131,6 +131,10 @@ class Transport:
         self._pending = {}
         self._tarefas = set()
         self._cert_pem = None
+        self._pending_pings = {}
+        self._backoff = {}
+        self._ultimo_pacote = {}
+        self._heartbeat = None
 
     # ---------- ciclo de vida ----------
 
@@ -149,8 +153,16 @@ class Transport:
             # dois estourariam ValueError no readline.
             limit=protocol.MAX_LINE_BYTES,
         )
+        self._heartbeat = asyncio.create_task(self._laco_heartbeat())
 
     async def stop(self):
+        if self._heartbeat:
+            self._heartbeat.cancel()
+            try:
+                await self._heartbeat
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat = None
         for pendente in list(self._pending.values()):
             if pendente.timer:
                 pendente.timer.cancel()
@@ -244,6 +256,7 @@ class Transport:
 
     async def _despacha(self, sessao, packet):
         """Retorna False para encerrar a conexao."""
+        self._ultimo_pacote[id(sessao)] = asyncio.get_running_loop().time()
         tipo = packet["type"]
 
         if tipo == "identity":
@@ -269,9 +282,11 @@ class Transport:
             case _ if tipo == PING:
                 await sessao.send(protocol.make_packet(PONG, {"echo_id": packet["id"]}))
             case _ if tipo == PONG:
-                self._emit("pong", {
-                    "device_id": sessao.device_id, "echo_id": packet["body"].get("echo_id"),
-                })
+                echo = packet["body"].get("echo_id")
+                futuro = self._pending_pings.pop(echo, None)
+                if futuro and not futuro.done():
+                    futuro.set_result(asyncio.get_running_loop().time())
+                self._emit("pong", {"device_id": sessao.device_id, "echo_id": echo})
             case _:
                 log.debug("tipo desconhecido de %s: %s", sessao.device_id, tipo)
         return True
@@ -473,3 +488,61 @@ class Transport:
             self._on_event(kind, payload)
         except Exception:
             log.exception("handler de evento falhou para %s", kind)
+
+    MAX_BACKOFF = 60.0
+
+    async def ping(self, device_id):
+        sessao = self._sessions.get(device_id)
+        if sessao is None:
+            return None
+        loop = asyncio.get_running_loop()
+        packet = protocol.make_packet(PING)
+        futuro = loop.create_future()
+        self._pending_pings[packet["id"]] = futuro
+        comeco = loop.time()
+        try:
+            await sessao.send(packet)
+            fim = await asyncio.wait_for(futuro, timeout=self._cfg.session_timeout)
+        except (asyncio.TimeoutError, ConnectionError, ssl.SSLError):
+            self._pending_pings.pop(packet["id"], None)
+            return None
+        return (fim - comeco) * 1000.0
+
+    async def ensure_connected(self, identity, host):
+        """Chamado pela descoberta. Nao abre segunda conexao nem fura o backoff."""
+        if identity.device_id in self._sessions:
+            return
+        agora = asyncio.get_running_loop().time()
+        proibido_ate = self._backoff.get(identity.device_id, (0.0, 0.0))[1]
+        if agora < proibido_ate:
+            return
+        sessao = await self.connect(host, identity.port)
+        if sessao is None:
+            self._proximo_backoff(identity.device_id)
+        else:
+            self._zera_backoff(identity.device_id)
+
+    def _proximo_backoff(self, device_id):
+        atual, _ = self._backoff.get(device_id, (0.0, 0.0))
+        proximo = 1.0 if atual == 0.0 else min(atual * 2, self.MAX_BACKOFF)
+        agora = asyncio.get_running_loop().time()
+        self._backoff[device_id] = (proximo, agora + proximo)
+        return proximo
+
+    def _zera_backoff(self, device_id):
+        self._backoff.pop(device_id, None)
+
+    async def _laco_heartbeat(self):
+        while True:
+            await asyncio.sleep(self._cfg.ping_interval)
+            agora = asyncio.get_running_loop().time()
+            for sessao in list(self._sessions.values()):
+                visto = self._ultimo_pacote.get(id(sessao), agora)
+                if agora - visto > self._cfg.session_timeout:
+                    log.info("sessao com %s sem resposta, encerrando", sessao.device_id)
+                    await self._encerra(sessao)
+                    continue
+                try:
+                    await sessao.send(protocol.make_packet(PING))
+                except (ConnectionError, ssl.SSLError):
+                    await self._encerra(sessao)
