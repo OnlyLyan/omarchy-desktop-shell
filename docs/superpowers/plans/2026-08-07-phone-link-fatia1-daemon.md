@@ -1632,6 +1632,86 @@ async def test_unpair_remove_dos_dois_lados_do_ponto_de_vista_local(tmp_path):
         await b.tr.stop()
 
 
+async def test_identity_repetido_derruba_a_sessao(tmp_path):
+    """Sessao pareada nao pode se re-rotular como outro aparelho.
+
+    Sem a guarda, quem pareou como A mandaria um segundo identity dizendo ser X,
+    o bloco de confianca seria pulado por X ser desconhecido, mas paired
+    continuaria True e o gate deixaria passar qualquer tipo.
+    """
+    a = await monta(tmp_path, "a", 45115)
+    b = await monta(tmp_path, "b", 45116)
+    try:
+        await parear(a, b)
+        sessao = a.tr.sessions()[0]
+        assert sessao.paired is True
+
+        falsa = discovery.Identity(
+            device_id="nunca-pareado", name="intruso", device_type="phone",
+            port=1, protocol_version=config.PROTOCOL_VERSION, capabilities=[],
+        )
+        await sessao.send(protocol.make_packet("identity", falsa.to_body()))
+        await asyncio.sleep(0.3)
+
+        assert b.tr.sessions() == [], "a sessao deveria ter sido derrubada"
+        assert b.trust.get("nunca-pareado") is None
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_fingerprint_diferente_recusa_aparelho_conhecido(tmp_path):
+    """Aparelho no truststore com outro certificado nao entra.
+
+    E o caso do app reinstalado. Aceitar em silencio anularia o pareamento.
+    """
+    a = await monta(tmp_path, "a", 45117)
+    b = await monta(tmp_path, "b", 45118)
+    try:
+        await parear(a, b)
+        # b passa a conhecer a com um fingerprint que nao e o dele.
+        conhecido = b.trust.get(a.cfg.device_id)
+        b.trust.add(pairing.Device(
+            device_id=conhecido.device_id, name=conhecido.name,
+            fingerprint="F" * 64, certificate=conhecido.certificate,
+        ))
+        for sessao in list(a.tr.sessions()) + list(b.tr.sessions()):
+            await sessao.close()
+        await asyncio.sleep(0.2)
+
+        await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+        await asyncio.sleep(0.3)
+        assert b.tr.sessions() == [], "fingerprint divergente deveria recusar"
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
+    """O certificado do corpo tem que ser o mesmo do canal TLS.
+
+    Divergencia significa alguem tentando parear com credencial de terceiro.
+    """
+    a = await monta(tmp_path, "a", 45119)
+    b = await monta(tmp_path, "b", 45120)
+    terceiro_cert = tmp_path / "terceiro-cert.pem"
+    terceiro_key = tmp_path / "terceiro-key.pem"
+    pairing.ensure_certificate(terceiro_cert, terceiro_key, "terceiro")
+    try:
+        sessao = await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+        await asyncio.sleep(0.2)
+        await sessao.send(protocol.make_packet(
+            "pair.request", {"certificate": terceiro_cert.read_text()}
+        ))
+        await asyncio.sleep(0.3)
+
+        assert b.trust.get(a.cfg.device_id) is None
+        assert b.cfg.device_id not in b.tr._pending
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
 async def test_conexao_duplicada_para_o_mesmo_aparelho_e_fechada(tmp_path):
     a = await monta(tmp_path, "a", 45113)
     b = await monta(tmp_path, "b", 45114)
@@ -1833,6 +1913,19 @@ class Transport:
     def _registra_identidade(self, sessao, packet):
         from . import discovery as _discovery
 
+        if sessao.identity is not None:
+            # Cada lado se identifica uma unica vez. Sem esta guarda, uma sessao
+            # que ja pareou como A poderia se re-rotular como um device_id
+            # qualquer: o bloco de confianca abaixo seria pulado por ser
+            # desconhecido, mas sessao.paired continuaria True de antes, e o gate
+            # de pareamento deixaria passar qualquer tipo. Ainda por cima a
+            # entrada antiga em _sessions ficaria apontando para uma sessao
+            # morta, e a reconexao legitima de A seria recusada como duplicada.
+            log.warning(
+                "sessao de %s tentou se identificar de novo, derrubando",
+                sessao.device_id,
+            )
+            return False
         try:
             identidade = _discovery.Identity.from_body(packet["body"])
         except _discovery.IdentityError as exc:
@@ -1915,6 +2008,12 @@ class Transport:
         self._abre_pendente(sessao, fingerprint, iniciado_por_nos=False, pem=pem)
 
     def _abre_pendente(self, sessao, fingerprint, iniciado_por_nos, pem=None):
+        anterior = self._pending.get(sessao.device_id)
+        if anterior is not None and anterior.timer:
+            # Sem cancelar, o timer velho dispara depois e derruba o pareamento
+            # novo, que ainda estava dentro do proprio prazo. Acontece com dois
+            # request_pair seguidos, um duplo clique na UI da fatia 2 basta.
+            anterior.timer.cancel()
         codigo = pairing.pair_code(
             pairing.fingerprint_of_file(self._cfg.cert_path), fingerprint
         )
