@@ -1877,6 +1877,9 @@ class Transport:
 
     async def _encerra(self, sessao):
         await sessao.close()
+        # Sem isto o mapa cresce uma entrada por sessao que ja existiu, e ainda
+        # abre espaco para colisao: o CPython reaproveita o id de objeto morto.
+        self._ultimo_pacote.pop(id(sessao), None)
         if sessao.device_id and self._sessions.get(sessao.device_id) is sessao:
             del self._sessions[sessao.device_id]
             self._emit("device.state", {
@@ -2280,6 +2283,32 @@ async def test_pareamento_sobrevive_ao_heartbeat(tmp_path):
         await b.tr.stop()
 
 
+async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
+    """Quem se identifica e nunca pede pareamento nao fica pendurado.
+
+    Essa sessao nao tem pair_timeout cuidando dela, porque o prazo so nasce
+    quando alguem pede o pareamento. Se o heartbeat pulasse a checagem de
+    sessao morta para nao pareadas, ela viveria para sempre.
+    """
+    a = await monta(tmp_path, "a", 45213, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 45214, ping_interval=0.1, session_timeout=0.3)
+    try:
+        await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+        await asyncio.sleep(0.15)
+        assert a.tr.sessions(), "a sessao deveria ter subido"
+        sessao = a.tr.sessions()[0]
+        assert sessao.paired is False
+
+        agora = asyncio.get_running_loop().time()
+        a.tr._ultimo_pacote[id(sessao)] = agora - 999
+        await asyncio.sleep(0.5)
+
+        assert a.tr.sessions() == [], "sessao nao pareada e muda deveria cair"
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
 async def test_backoff_dobra_e_respeita_o_teto(tmp_path):
     a = await monta(tmp_path, "a", 45208)
     try:
@@ -2397,16 +2426,19 @@ E acrescente ao final da classe:
             await asyncio.sleep(self._cfg.ping_interval)
             agora = asyncio.get_running_loop().time()
             for sessao in list(self._sessions.values()):
-                if not sessao.paired:
-                    # Sessao em pareamento nao leva ping: phone.ping nao comeca
-                    # com pair., entao o gate do outro lado derrubaria a conexao
-                    # antes de o usuario confirmar o codigo. Quem cuida do prazo
-                    # dela e o pair_timeout.
-                    continue
+                # A checagem de sessao morta vale para todas, pareadas ou nao.
+                # Uma sessao que se identificou e nunca pediu pareamento nao tem
+                # pair_timeout para cuidar dela, e ficaria pendurada para sempre
+                # se so as pareadas fossem verificadas aqui.
                 visto = self._ultimo_pacote.get(id(sessao), agora)
                 if agora - visto > self._cfg.session_timeout:
                     log.info("sessao com %s sem resposta, encerrando", sessao.device_id)
                     await self._encerra(sessao)
+                    continue
+                if not sessao.paired:
+                    # O que a sessao em pareamento nao pode receber e o ping:
+                    # phone.ping nao comeca com pair., entao o gate do outro lado
+                    # derrubaria a conexao antes de o usuario confirmar o codigo.
                     continue
                 try:
                     await sessao.send(protocol.make_packet(PING))
