@@ -2644,7 +2644,13 @@ class IpcServer:
         if self.path.exists():
             # Sobra de um daemon que morreu sem limpar.
             self.path.unlink()
-        self._server = await asyncio.start_unix_server(self._atende, path=str(self.path))
+        self._server = await asyncio.start_unix_server(
+            self._atende, path=str(self.path),
+            # Mesmo motivo do transport: sem isto o buffer seria o default de
+            # 64KB e o limite de 1MB do protocolo nao valeria aqui. E por este
+            # socket que a fatia 2 vai mandar notificacao com icone.
+            limit=protocol.MAX_LINE_BYTES,
+        )
         os.chmod(self.path, 0o600)
 
     async def stop(self):
@@ -2679,7 +2685,16 @@ class IpcServer:
         self._clientes.add(writer)
         try:
             while True:
-                linha = await reader.readline()
+                try:
+                    linha = await reader.readline()
+                except ValueError as exc:
+                    # Linha acima do buffer. Sem esta traducao a tarefa do
+                    # cliente morreria por excecao nao tratada, e do outro lado
+                    # isso apareceria como EOF silencioso em vez de erro.
+                    await self._responde(writer, protocol.make_packet(
+                        "error", {"message": f"linha acima do limite: {exc}"}
+                    ))
+                    break
                 if not linha:
                     break
                 await self._processa(linha, writer)
