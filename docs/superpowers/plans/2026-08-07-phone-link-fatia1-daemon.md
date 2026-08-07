@@ -3485,12 +3485,28 @@ async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
         # 2. Pareamento com confirmacao nos dois lados.
         assert (await a.handle_command("pair", {"device_id": b.cfg.device_id}))["ok"]
 
-        async def pendente():
-            return b.cfg.device_id in a._transport._pending
+        # Esperar so o lado de quem pediu nao serve: request_pair preenche
+        # _pending localmente e de forma sincrona, antes de o pacote sair. E
+        # preciso esperar o outro lado ter processado o pair.request, senao a
+        # confirmacao chega antes de existir o que confirmar.
+        async def pendente_nos_dois():
+            return (
+                b.cfg.device_id in a._transport._pending
+                and a.cfg.device_id in b._transport._pending
+            )
 
-        assert await espera(pendente), "o pareamento nao ficou pendente"
-        await b.handle_command("confirm", {"device_id": a.cfg.device_id, "accept": True})
-        await a.handle_command("confirm", {"device_id": b.cfg.device_id, "accept": True})
+        assert await espera(pendente_nos_dois), "o pareamento nao ficou pendente nos dois lados"
+
+        confirmou_b = await b.handle_command(
+            "confirm", {"device_id": a.cfg.device_id, "accept": True}
+        )
+        confirmou_a = await a.handle_command(
+            "confirm", {"device_id": b.cfg.device_id, "accept": True}
+        )
+        # Ignorar este retorno foi o que escondeu a corrida: confirm_pair
+        # devolvia ok False por nao achar a pendencia, e o teste seguia adiante.
+        assert confirmou_b["ok"], "b nao aceitou a confirmacao"
+        assert confirmou_a["ok"], "a nao aceitou a confirmacao"
 
         async def parearam():
             listagem = await a.handle_command("list", {})
