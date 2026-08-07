@@ -3245,23 +3245,36 @@ def caminho_padrao():
 
 
 def pacote(tipo, corpo=None):
-    return json.dumps({
-        "id": str(uuid.uuid4()), "type": tipo, "ts": 0, "body": corpo or {},
+    packet_id = str(uuid.uuid4())
+    linha = json.dumps({
+        "id": packet_id, "type": tipo, "ts": 0, "body": corpo or {},
     }, ensure_ascii=False) + "\n"
+    return linha, packet_id
 
 
 async def pergunta(caminho, tipo, corpo=None):
     reader, writer = await asyncio.open_unix_connection(str(caminho))
     try:
-        writer.write(pacote(tipo, corpo).encode("utf-8"))
+        linha_pedido, meu_id = pacote(tipo, corpo)
+        writer.write(linha_pedido.encode("utf-8"))
         await writer.drain()
         while True:
             linha = await reader.readline()
             if not linha:
                 raise ConnectionError("phoned fechou a conexao sem responder")
             resposta = json.loads(linha)
-            # Eventos empurrados podem chegar antes da resposta.
-            if resposta["type"] in (f"{tipo}.result", "error"):
+
+            # O tipo sozinho nao basta. O daemon empurra um evento pair.result
+            # para todos os clientes conectados, com exatamente o mesmo nome da
+            # resposta direta ao comando pair. Um pareamento alheio expirando
+            # seria lido como resposta nossa. E para isso que o request_id
+            # existe.
+            if resposta["body"].get("request_id") == meu_id:
+                return resposta
+
+            # Erro sem correlacao so chega quando o daemon nao conseguiu sequer
+            # ler o nosso pacote, e nunca vem por broadcast, entao e nosso.
+            if resposta["type"] == "error" and "request_id" not in resposta["body"]:
                 return resposta
     finally:
         writer.close()
@@ -3366,7 +3379,10 @@ def main(argv=None):
 
     try:
         return asyncio.run(executa(args))
-    except (FileNotFoundError, ConnectionRefusedError):
+    # ConnectionError cobre tanto a recusa do sistema quanto o caso de o daemon
+    # cair no meio do pedido, que a propria pergunta levanta. Sem isso o segundo
+    # apareceria como traceback cru.
+    except (FileNotFoundError, ConnectionError):
         print(
             "phonectl: nao consegui falar com o phoned. Ele esta rodando? "
             "Tente: systemctl --user status phoned",
