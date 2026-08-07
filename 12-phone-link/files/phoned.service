@@ -1,0 +1,25 @@
+[Unit]
+Description=Phone Link, daemon de conexao com o celular
+Documentation=https://github.com/OnlyLyan/omarchy-desktop-shell
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/phone/run-phoned
+Restart=always
+RestartSec=5
+# O daemon guarda chave privada, entao o diretorio de estado fica so para o dono.
+UMask=0077
+# Endurecimento: o daemon so precisa de rede e do proprio estado.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/phone %t/phone
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

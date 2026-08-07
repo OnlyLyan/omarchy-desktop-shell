@@ -18,6 +18,7 @@ arquivos reais) e `install.sh` idempotente.
 | `08-bonus-opcional` | Extras OPCIONAIS (wallpaper-engine, tts-read) que a barra chama em dois botoes; instalador interativo, nao obrigatorio |
 | `09-pc-heartbeat` | Os "batimentos" do PC: coracao + grafico de ECG + bpm que aceleram e ficam vermelhos sob estresse (CPU/RAM/temp). Componente reutilizavel + demo standalone; ja integrado na barra (06) |
 | `11-monitor-panel` | Configuracao de monitores nativa na central: mapa arrastavel com snap magnetico, escala/rotacao/on-off, preview com toast de confirmacao e watchdog, perfis. Integrado na barra (06) |
+| `12-phone-link` | Conexao com o celular Android pela rede local: daemon proprio (`phoned`) com descoberta, pareamento e canal TLS, mais a CLI `phonectl`. Fatia 1: so transporte, sem UI |
 
 A barra (06) e **theme-aware**: le o `colors.toml` do tema ativo do Omarchy e troca junto, com
 seletor de tema na central de acoes (card Personalizacao). Detalhes no README da pasta 06.
@@ -35,6 +36,10 @@ seletor de tema na central de acoes (card Personalizacao). Detalhes no README da
   `special:minimized` e mantem um store em `/tmp/minimized-windows`. O clique no icone do app na
   taskbar da barra (pasta 06, `taskbar-activate.sh`) le esse mesmo store pra RESTAURAR a janela no
   workspace/monitor de origem. As duas pastas compartilham essa convencao.
+- **12 NAO depende de 06 nesta fatia**: `phoned` e `phonectl` sao standalone (daemon Python +
+  CLI), rodam sem a barra no ar. A integracao visual com a barra (icone de status, painel de
+  pareamento) chega na fatia 2, quando o QML de 06 passa a falar com o unix socket que 12
+  documenta.
 
 ### Versoes testadas
 - Hyprland `0.55.2` (tag v0.55.2)
