@@ -83,3 +83,21 @@ async def test_stop_remove_o_socket(tmp_path):
     assert caminho.exists()
     await d.stop()
     assert not caminho.exists()
+
+
+async def test_porta_ocupada_falha_sem_deixar_socket(tmp_path):
+    primeiro = await sobe(tmp_path, "a", 45309, [])
+    try:
+        cfg = config.load_config(
+            state_dir=tmp_path / "b" / "state", runtime_dir=tmp_path / "b" / "run",
+            name="b", tcp_port=45309, discovery_port=45310, announce_targets=[],
+        )
+        segundo = daemon.Daemon(cfg)
+        with pytest.raises(OSError):
+            try:
+                await segundo.start()
+            finally:
+                await segundo.stop()
+        assert not cfg.ipc_path.exists(), "socket do IPC ficou para tras"
+    finally:
+        await primeiro.stop()
