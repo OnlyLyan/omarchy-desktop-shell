@@ -279,6 +279,19 @@ class Transport:
     def _registra_identidade(self, sessao, packet):
         from . import discovery as _discovery
 
+        if sessao.identity is not None:
+            # Cada lado se identifica uma unica vez. Sem esta guarda, uma sessao
+            # que ja pareou como A poderia se re-rotular como um device_id
+            # qualquer: o bloco de confianca abaixo seria pulado por ser
+            # desconhecido, mas sessao.paired continuaria True de antes, e o gate
+            # de pareamento deixaria passar qualquer tipo. Ainda por cima a
+            # entrada antiga em _sessions ficaria apontando para uma sessao
+            # morta, e a reconexao legitima de A seria recusada como duplicada.
+            log.warning(
+                "sessao de %s tentou se identificar de novo, derrubando",
+                sessao.device_id,
+            )
+            return False
         try:
             identidade = _discovery.Identity.from_body(packet["body"])
         except _discovery.IdentityError as exc:
@@ -361,6 +374,12 @@ class Transport:
         self._abre_pendente(sessao, fingerprint, iniciado_por_nos=False, pem=pem)
 
     def _abre_pendente(self, sessao, fingerprint, iniciado_por_nos, pem=None):
+        anterior = self._pending.get(sessao.device_id)
+        if anterior is not None and anterior.timer:
+            # Sem cancelar, o timer velho dispara depois e derruba o pareamento
+            # novo, que ainda estava dentro do proprio prazo. Acontece com dois
+            # request_pair seguidos, um duplo clique na UI da fatia 2 basta.
+            anterior.timer.cancel()
         codigo = pairing.pair_code(
             pairing.fingerprint_of_file(self._cfg.cert_path), fingerprint
         )
