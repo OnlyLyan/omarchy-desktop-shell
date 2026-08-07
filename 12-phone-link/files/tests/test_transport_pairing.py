@@ -58,8 +58,8 @@ async def parear(a, b):
 
 
 async def test_pareamento_gera_o_mesmo_codigo_nos_dois_lados(tmp_path):
-    a = await monta(tmp_path, "a", 45101)
-    b = await monta(tmp_path, "b", 45102)
+    a = await monta(tmp_path, "a", 21101)
+    b = await monta(tmp_path, "b", 21102)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -76,8 +76,8 @@ async def test_pareamento_gera_o_mesmo_codigo_nos_dois_lados(tmp_path):
 
 
 async def test_pareamento_confirmado_grava_nos_dois_truststores(tmp_path):
-    a = await monta(tmp_path, "a", 45103)
-    b = await monta(tmp_path, "b", 45104)
+    a = await monta(tmp_path, "a", 21103)
+    b = await monta(tmp_path, "b", 21104)
     try:
         await parear(a, b)
         assert a.trust.get(b.cfg.device_id) is not None
@@ -92,8 +92,8 @@ async def test_pareamento_confirmado_grava_nos_dois_truststores(tmp_path):
 
 
 async def test_recusa_de_um_lado_nao_pareia_ninguem(tmp_path):
-    a = await monta(tmp_path, "a", 45105)
-    b = await monta(tmp_path, "b", 45106)
+    a = await monta(tmp_path, "a", 21105)
+    b = await monta(tmp_path, "b", 21106)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -111,8 +111,8 @@ async def test_recusa_de_um_lado_nao_pareia_ninguem(tmp_path):
 
 
 async def test_sessao_nao_pareada_e_derrubada_ao_enviar_tipo_comum(tmp_path):
-    a = await monta(tmp_path, "a", 45107)
-    b = await monta(tmp_path, "b", 45108)
+    a = await monta(tmp_path, "a", 21107)
+    b = await monta(tmp_path, "b", 21108)
     try:
         sessao = await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -125,8 +125,8 @@ async def test_sessao_nao_pareada_e_derrubada_ao_enviar_tipo_comum(tmp_path):
 
 
 async def test_pareamento_expira_pelo_timeout(tmp_path):
-    a = await monta(tmp_path, "a", 45109)
-    b = await monta(tmp_path, "b", 45110)
+    a = await monta(tmp_path, "a", 21109)
+    b = await monta(tmp_path, "b", 21110)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -141,8 +141,8 @@ async def test_pareamento_expira_pelo_timeout(tmp_path):
 
 
 async def test_unpair_remove_dos_dois_lados_do_ponto_de_vista_local(tmp_path):
-    a = await monta(tmp_path, "a", 45111)
-    b = await monta(tmp_path, "b", 45112)
+    a = await monta(tmp_path, "a", 21111)
+    b = await monta(tmp_path, "b", 21112)
     try:
         await parear(a, b)
         assert await a.tr.unpair(b.cfg.device_id) is True
@@ -160,8 +160,8 @@ async def test_identity_repetido_derruba_a_sessao(tmp_path):
     o bloco de confianca seria pulado por X ser desconhecido, mas paired
     continuaria True e o gate deixaria passar qualquer tipo.
     """
-    a = await monta(tmp_path, "a", 45115)
-    b = await monta(tmp_path, "b", 45116)
+    a = await monta(tmp_path, "a", 21115)
+    b = await monta(tmp_path, "b", 21116)
     try:
         await parear(a, b)
         sessao = a.tr.sessions()[0]
@@ -186,8 +186,8 @@ async def test_fingerprint_diferente_recusa_aparelho_conhecido(tmp_path):
 
     E o caso do app reinstalado. Aceitar em silencio anularia o pareamento.
     """
-    a = await monta(tmp_path, "a", 45117)
-    b = await monta(tmp_path, "b", 45118)
+    a = await monta(tmp_path, "a", 21117)
+    b = await monta(tmp_path, "b", 21118)
     try:
         await parear(a, b)
         # b passa a conhecer a com um fingerprint que nao e o dele.
@@ -213,8 +213,8 @@ async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
 
     Divergencia significa alguem tentando parear com credencial de terceiro.
     """
-    a = await monta(tmp_path, "a", 45119)
-    b = await monta(tmp_path, "b", 45120)
+    a = await monta(tmp_path, "a", 21119)
+    b = await monta(tmp_path, "b", 21120)
     terceiro_cert = tmp_path / "terceiro-cert.pem"
     terceiro_key = tmp_path / "terceiro-key.pem"
     pairing.ensure_certificate(terceiro_cert, terceiro_key, "terceiro")
@@ -234,8 +234,8 @@ async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
 
 
 async def test_conexao_duplicada_para_o_mesmo_aparelho_e_fechada(tmp_path):
-    a = await monta(tmp_path, "a", 45113)
-    b = await monta(tmp_path, "b", 45114)
+    a = await monta(tmp_path, "a", 21113)
+    b = await monta(tmp_path, "b", 21114)
     try:
         await parear(a, b)
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)

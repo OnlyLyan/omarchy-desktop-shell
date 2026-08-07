@@ -17,7 +17,7 @@ async def sobe(tmp_path, nome, porta, alvos):
 
 
 async def test_list_comeca_vazio(tmp_path):
-    d = await sobe(tmp_path, "a", 45301, [])
+    d = await sobe(tmp_path, "a", 21301, [])
     try:
         assert await d.handle_command("list", {}) == {"devices": []}
     finally:
@@ -25,7 +25,7 @@ async def test_list_comeca_vazio(tmp_path):
 
 
 async def test_comando_desconhecido_levanta_erro(tmp_path):
-    d = await sobe(tmp_path, "a", 45302, [])
+    d = await sobe(tmp_path, "a", 21302, [])
     try:
         with pytest.raises(ValueError):
             await d.handle_command("inventado", {})
@@ -34,8 +34,8 @@ async def test_comando_desconhecido_levanta_erro(tmp_path):
 
 
 async def test_descoberta_leva_a_conexao_automatica(tmp_path):
-    a = await sobe(tmp_path, "a", 45303, [("127.0.0.1", 45304)])
-    b = await sobe(tmp_path, "b", 45304, [("127.0.0.1", 45303)])
+    a = await sobe(tmp_path, "a", 21303, [("127.0.0.1", 21304)])
+    b = await sobe(tmp_path, "b", 21304, [("127.0.0.1", 21303)])
     try:
         await asyncio.sleep(1.0)
         listagem = await a.handle_command("list", {})
@@ -48,7 +48,7 @@ async def test_descoberta_leva_a_conexao_automatica(tmp_path):
 
 
 async def test_ipc_responde_ao_comando_list(tmp_path):
-    d = await sobe(tmp_path, "a", 45305, [])
+    d = await sobe(tmp_path, "a", 21305, [])
     try:
         reader, writer = await asyncio.open_unix_connection(str(d.cfg.ipc_path))
         writer.write(protocol.encode(protocol.make_packet("list", packet_id="r1")))
@@ -62,10 +62,10 @@ async def test_ipc_responde_ao_comando_list(tmp_path):
 
 
 async def test_eventos_do_transport_sao_empurrados_pelo_ipc(tmp_path):
-    a = await sobe(tmp_path, "a", 45306, [("127.0.0.1", 45307)])
+    a = await sobe(tmp_path, "a", 21306, [("127.0.0.1", 21307)])
     try:
         reader, writer = await asyncio.open_unix_connection(str(a.cfg.ipc_path))
-        b = await sobe(tmp_path, "b", 45307, [("127.0.0.1", 45306)])
+        b = await sobe(tmp_path, "b", 21307, [("127.0.0.1", 21306)])
         try:
             evento = protocol.decode(await asyncio.wait_for(reader.readline(), timeout=5))
         finally:
@@ -78,7 +78,7 @@ async def test_eventos_do_transport_sao_empurrados_pelo_ipc(tmp_path):
 
 
 async def test_stop_remove_o_socket(tmp_path):
-    d = await sobe(tmp_path, "a", 45308, [])
+    d = await sobe(tmp_path, "a", 21308, [])
     caminho = d.cfg.ipc_path
     assert caminho.exists()
     await d.stop()
@@ -86,11 +86,11 @@ async def test_stop_remove_o_socket(tmp_path):
 
 
 async def test_porta_ocupada_falha_sem_deixar_socket(tmp_path):
-    primeiro = await sobe(tmp_path, "a", 45309, [])
+    primeiro = await sobe(tmp_path, "a", 21309, [])
     try:
         cfg = config.load_config(
             state_dir=tmp_path / "b" / "state", runtime_dir=tmp_path / "b" / "run",
-            name="b", tcp_port=45309, discovery_port=45310, announce_targets=[],
+            name="b", tcp_port=21309, discovery_port=21310, announce_targets=[],
         )
         segundo = daemon.Daemon(cfg)
         with pytest.raises(OSError):

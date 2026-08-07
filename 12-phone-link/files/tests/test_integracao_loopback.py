@@ -39,8 +39,8 @@ async def espera(condicao, timeout=8.0, intervalo=0.1):
 
 
 async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
-    a = await sobe(tmp_path, "pc", 45401, 45402)
-    b = await sobe(tmp_path, "celular", 45402, 45401)
+    a = await sobe(tmp_path, "pc", 21401, 21402)
+    b = await sobe(tmp_path, "celular", 21402, 21401)
     try:
         # 1. Descoberta automatica.
         async def conectaram():
@@ -96,7 +96,7 @@ async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
 
         assert await espera(caiu), "a queda nao foi detectada"
 
-        b = await sobe(tmp_path, "celular", 45402, 45401)
+        b = await sobe(tmp_path, "celular", 21402, 21401)
 
         async def voltou():
             listagem = await a.handle_command("list", {})
@@ -113,8 +113,8 @@ async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
 
 
 async def test_terceiro_nao_pareado_nao_consegue_enviar_ping(tmp_path):
-    a = await sobe(tmp_path, "pc", 45403, 45404)
-    intruso = await sobe(tmp_path, "intruso", 45404, 45403)
+    a = await sobe(tmp_path, "pc", 21403, 21404)
+    intruso = await sobe(tmp_path, "intruso", 21404, 21403)
     try:
         async def conectaram():
             return len(a._transport.sessions()) == 1

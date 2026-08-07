@@ -888,8 +888,8 @@ async def sobe(tmp_path, nome, porta, alvos, recebidos):
 
 async def test_uma_instancia_recebe_o_anuncio_da_outra(tmp_path):
     recebidos_a, recebidos_b = [], []
-    _, a = await sobe(tmp_path, "a", 45001, [("127.0.0.1", 45002)], recebidos_a)
-    _, b = await sobe(tmp_path, "b", 45002, [("127.0.0.1", 45001)], recebidos_b)
+    _, a = await sobe(tmp_path, "a", 21001, [("127.0.0.1", 21002)], recebidos_a)
+    _, b = await sobe(tmp_path, "b", 21002, [("127.0.0.1", 21001)], recebidos_b)
     try:
         a.announce()
         b.announce()
@@ -908,7 +908,7 @@ async def test_uma_instancia_recebe_o_anuncio_da_outra(tmp_path):
 
 async def test_ignora_o_proprio_anuncio(tmp_path):
     recebidos = []
-    _, a = await sobe(tmp_path, "a", 45003, [("127.0.0.1", 45003)], recebidos)
+    _, a = await sobe(tmp_path, "a", 21003, [("127.0.0.1", 21003)], recebidos)
     try:
         a.announce()
         await asyncio.sleep(0.2)
@@ -919,12 +919,12 @@ async def test_ignora_o_proprio_anuncio(tmp_path):
 
 async def test_datagrama_invalido_nao_derruba_o_servico(tmp_path):
     recebidos = []
-    _, a = await sobe(tmp_path, "a", 45004, [("127.0.0.1", 45005)], recebidos)
-    _, b = await sobe(tmp_path, "b", 45005, [("127.0.0.1", 45004)], recebidos)
+    _, a = await sobe(tmp_path, "a", 21004, [("127.0.0.1", 21005)], recebidos)
+    _, b = await sobe(tmp_path, "b", 21005, [("127.0.0.1", 21004)], recebidos)
     try:
         lixo = asyncio.get_running_loop()
         transporte, _ = await lixo.create_datagram_endpoint(
-            asyncio.DatagramProtocol, remote_addr=("127.0.0.1", 45004)
+            asyncio.DatagramProtocol, remote_addr=("127.0.0.1", 21004)
         )
         transporte.sendto(b"nao e json\n")
         transporte.sendto(protocol.encode(protocol.make_packet("outro.tipo")))
@@ -1547,8 +1547,8 @@ async def parear(a, b):
 
 
 async def test_pareamento_gera_o_mesmo_codigo_nos_dois_lados(tmp_path):
-    a = await monta(tmp_path, "a", 45101)
-    b = await monta(tmp_path, "b", 45102)
+    a = await monta(tmp_path, "a", 21101)
+    b = await monta(tmp_path, "b", 21102)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -1565,8 +1565,8 @@ async def test_pareamento_gera_o_mesmo_codigo_nos_dois_lados(tmp_path):
 
 
 async def test_pareamento_confirmado_grava_nos_dois_truststores(tmp_path):
-    a = await monta(tmp_path, "a", 45103)
-    b = await monta(tmp_path, "b", 45104)
+    a = await monta(tmp_path, "a", 21103)
+    b = await monta(tmp_path, "b", 21104)
     try:
         await parear(a, b)
         assert a.trust.get(b.cfg.device_id) is not None
@@ -1581,8 +1581,8 @@ async def test_pareamento_confirmado_grava_nos_dois_truststores(tmp_path):
 
 
 async def test_recusa_de_um_lado_nao_pareia_ninguem(tmp_path):
-    a = await monta(tmp_path, "a", 45105)
-    b = await monta(tmp_path, "b", 45106)
+    a = await monta(tmp_path, "a", 21105)
+    b = await monta(tmp_path, "b", 21106)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -1600,8 +1600,8 @@ async def test_recusa_de_um_lado_nao_pareia_ninguem(tmp_path):
 
 
 async def test_sessao_nao_pareada_e_derrubada_ao_enviar_tipo_comum(tmp_path):
-    a = await monta(tmp_path, "a", 45107)
-    b = await monta(tmp_path, "b", 45108)
+    a = await monta(tmp_path, "a", 21107)
+    b = await monta(tmp_path, "b", 21108)
     try:
         sessao = await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -1614,8 +1614,8 @@ async def test_sessao_nao_pareada_e_derrubada_ao_enviar_tipo_comum(tmp_path):
 
 
 async def test_pareamento_expira_pelo_timeout(tmp_path):
-    a = await monta(tmp_path, "a", 45109)
-    b = await monta(tmp_path, "b", 45110)
+    a = await monta(tmp_path, "a", 21109)
+    b = await monta(tmp_path, "b", 21110)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -1630,8 +1630,8 @@ async def test_pareamento_expira_pelo_timeout(tmp_path):
 
 
 async def test_unpair_remove_dos_dois_lados_do_ponto_de_vista_local(tmp_path):
-    a = await monta(tmp_path, "a", 45111)
-    b = await monta(tmp_path, "b", 45112)
+    a = await monta(tmp_path, "a", 21111)
+    b = await monta(tmp_path, "b", 21112)
     try:
         await parear(a, b)
         assert await a.tr.unpair(b.cfg.device_id) is True
@@ -1649,8 +1649,8 @@ async def test_identity_repetido_derruba_a_sessao(tmp_path):
     o bloco de confianca seria pulado por X ser desconhecido, mas paired
     continuaria True e o gate deixaria passar qualquer tipo.
     """
-    a = await monta(tmp_path, "a", 45115)
-    b = await monta(tmp_path, "b", 45116)
+    a = await monta(tmp_path, "a", 21115)
+    b = await monta(tmp_path, "b", 21116)
     try:
         await parear(a, b)
         sessao = a.tr.sessions()[0]
@@ -1675,8 +1675,8 @@ async def test_fingerprint_diferente_recusa_aparelho_conhecido(tmp_path):
 
     E o caso do app reinstalado. Aceitar em silencio anularia o pareamento.
     """
-    a = await monta(tmp_path, "a", 45117)
-    b = await monta(tmp_path, "b", 45118)
+    a = await monta(tmp_path, "a", 21117)
+    b = await monta(tmp_path, "b", 21118)
     try:
         await parear(a, b)
         # b passa a conhecer a com um fingerprint que nao e o dele.
@@ -1702,8 +1702,8 @@ async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
 
     Divergencia significa alguem tentando parear com credencial de terceiro.
     """
-    a = await monta(tmp_path, "a", 45119)
-    b = await monta(tmp_path, "b", 45120)
+    a = await monta(tmp_path, "a", 21119)
+    b = await monta(tmp_path, "b", 21120)
     terceiro_cert = tmp_path / "terceiro-cert.pem"
     terceiro_key = tmp_path / "terceiro-key.pem"
     pairing.ensure_certificate(terceiro_cert, terceiro_key, "terceiro")
@@ -1723,8 +1723,8 @@ async def test_pair_request_com_pem_divergente_e_recusado(tmp_path):
 
 
 async def test_conexao_duplicada_para_o_mesmo_aparelho_e_fechada(tmp_path):
-    a = await monta(tmp_path, "a", 45113)
-    b = await monta(tmp_path, "b", 45114)
+    a = await monta(tmp_path, "a", 21113)
+    b = await monta(tmp_path, "b", 21114)
     try:
         await parear(a, b)
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
@@ -2166,8 +2166,8 @@ from .test_transport_pairing import monta, parear
 
 
 async def test_ping_retorna_latencia_em_milissegundos(tmp_path):
-    a = await monta(tmp_path, "a", 45201)
-    b = await monta(tmp_path, "b", 45202)
+    a = await monta(tmp_path, "a", 21201)
+    b = await monta(tmp_path, "b", 21202)
     try:
         await parear(a, b)
         latencia = await a.tr.ping(b.cfg.device_id)
@@ -2179,7 +2179,7 @@ async def test_ping_retorna_latencia_em_milissegundos(tmp_path):
 
 
 async def test_ping_para_aparelho_desconhecido_retorna_none(tmp_path):
-    a = await monta(tmp_path, "a", 45203)
+    a = await monta(tmp_path, "a", 21203)
     try:
         assert await a.tr.ping("nao-existe") is None
     finally:
@@ -2191,8 +2191,8 @@ async def test_queda_limpa_emite_disconnected(tmp_path):
 
     Este caminho nao passa pelo heartbeat, e o teste seguinte cobre o que passa.
     """
-    a = await monta(tmp_path, "a", 45204)
-    b = await monta(tmp_path, "b", 45205)
+    a = await monta(tmp_path, "a", 21204)
+    b = await monta(tmp_path, "b", 21205)
     a.cfg.ping_interval = 0.1
     a.cfg.session_timeout = 0.3
     try:
@@ -2217,8 +2217,8 @@ async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
     atividade em vez de fechar a conexao: fechar exercitaria o EOF, nao o
     mecanismo de staleness.
     """
-    a = await monta(tmp_path, "a", 45209, ping_interval=0.1, session_timeout=0.3)
-    b = await monta(tmp_path, "b", 45210, ping_interval=0.1, session_timeout=0.3)
+    a = await monta(tmp_path, "a", 21209, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 21210, ping_interval=0.1, session_timeout=0.3)
     try:
         await parear(a, b)
         sessao = a.tr.sessions()[0]
@@ -2236,8 +2236,8 @@ async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
 
 
 async def test_ensure_connected_nao_abre_segunda_conexao(tmp_path):
-    a = await monta(tmp_path, "a", 45206)
-    b = await monta(tmp_path, "b", 45207)
+    a = await monta(tmp_path, "a", 21206)
+    b = await monta(tmp_path, "b", 21207)
     try:
         await parear(a, b)
         identidade_b = discovery.Identity(
@@ -2262,8 +2262,8 @@ async def test_pareamento_sobrevive_ao_heartbeat(tmp_path):
     confirmar nos dois aparelhos. Com ping bem mais rapido que o prazo de
     pareamento, o teste reproduz a corrida.
     """
-    a = await monta(tmp_path, "a", 45211, ping_interval=0.05, pair_timeout=5.0)
-    b = await monta(tmp_path, "b", 45212, ping_interval=0.05, pair_timeout=5.0)
+    a = await monta(tmp_path, "a", 21211, ping_interval=0.05, pair_timeout=5.0)
+    b = await monta(tmp_path, "b", 21212, ping_interval=0.05, pair_timeout=5.0)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -2290,8 +2290,8 @@ async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
     quando alguem pede o pareamento. Se o heartbeat pulasse a checagem de
     sessao morta para nao pareadas, ela viveria para sempre.
     """
-    a = await monta(tmp_path, "a", 45213, ping_interval=0.1, session_timeout=0.3)
-    b = await monta(tmp_path, "b", 45214, ping_interval=0.1, session_timeout=0.3)
+    a = await monta(tmp_path, "a", 21213, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 21214, ping_interval=0.1, session_timeout=0.3)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.15)
@@ -2310,7 +2310,7 @@ async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
 
 
 async def test_backoff_dobra_e_respeita_o_teto(tmp_path):
-    a = await monta(tmp_path, "a", 45208)
+    a = await monta(tmp_path, "a", 21208)
     try:
         assert a.tr._proximo_backoff("x") == 1.0
         assert a.tr._proximo_backoff("x") == 2.0
@@ -2791,7 +2791,7 @@ async def sobe(tmp_path, nome, porta, alvos):
 
 
 async def test_list_comeca_vazio(tmp_path):
-    d = await sobe(tmp_path, "a", 45301, [])
+    d = await sobe(tmp_path, "a", 21301, [])
     try:
         assert await d.handle_command("list", {}) == {"devices": []}
     finally:
@@ -2799,7 +2799,7 @@ async def test_list_comeca_vazio(tmp_path):
 
 
 async def test_comando_desconhecido_levanta_erro(tmp_path):
-    d = await sobe(tmp_path, "a", 45302, [])
+    d = await sobe(tmp_path, "a", 21302, [])
     try:
         with pytest.raises(ValueError):
             await d.handle_command("inventado", {})
@@ -2808,8 +2808,8 @@ async def test_comando_desconhecido_levanta_erro(tmp_path):
 
 
 async def test_descoberta_leva_a_conexao_automatica(tmp_path):
-    a = await sobe(tmp_path, "a", 45303, [("127.0.0.1", 45304)])
-    b = await sobe(tmp_path, "b", 45304, [("127.0.0.1", 45303)])
+    a = await sobe(tmp_path, "a", 21303, [("127.0.0.1", 21304)])
+    b = await sobe(tmp_path, "b", 21304, [("127.0.0.1", 21303)])
     try:
         await asyncio.sleep(1.0)
         listagem = await a.handle_command("list", {})
@@ -2822,7 +2822,7 @@ async def test_descoberta_leva_a_conexao_automatica(tmp_path):
 
 
 async def test_ipc_responde_ao_comando_list(tmp_path):
-    d = await sobe(tmp_path, "a", 45305, [])
+    d = await sobe(tmp_path, "a", 21305, [])
     try:
         reader, writer = await asyncio.open_unix_connection(str(d.cfg.ipc_path))
         writer.write(protocol.encode(protocol.make_packet("list", packet_id="r1")))
@@ -2836,10 +2836,10 @@ async def test_ipc_responde_ao_comando_list(tmp_path):
 
 
 async def test_eventos_do_transport_sao_empurrados_pelo_ipc(tmp_path):
-    a = await sobe(tmp_path, "a", 45306, [("127.0.0.1", 45307)])
+    a = await sobe(tmp_path, "a", 21306, [("127.0.0.1", 21307)])
     try:
         reader, writer = await asyncio.open_unix_connection(str(a.cfg.ipc_path))
-        b = await sobe(tmp_path, "b", 45307, [("127.0.0.1", 45306)])
+        b = await sobe(tmp_path, "b", 21307, [("127.0.0.1", 21306)])
         try:
             evento = protocol.decode(await asyncio.wait_for(reader.readline(), timeout=5))
         finally:
@@ -2852,7 +2852,7 @@ async def test_eventos_do_transport_sao_empurrados_pelo_ipc(tmp_path):
 
 
 async def test_stop_remove_o_socket(tmp_path):
-    d = await sobe(tmp_path, "a", 45308, [])
+    d = await sobe(tmp_path, "a", 21308, [])
     caminho = d.cfg.ipc_path
     assert caminho.exists()
     await d.stop()
@@ -3067,7 +3067,7 @@ Run:
 ```bash
 cd 12-phone-link/files && timeout 3 python -m phoned \
   --state-dir /tmp/phone-manual/state --runtime-dir /tmp/phone-manual/run \
-  --port 45999 --log-level DEBUG; echo "saida: $?"
+  --port 21999 --log-level DEBUG; echo "saida: $?"
 ```
 Expected: log `phoned no ar como ...`, encerra pelo timeout, e `/tmp/phone-manual/run/ipc.sock` não fica para trás.
 
@@ -3472,8 +3472,8 @@ async def espera(condicao, timeout=8.0, intervalo=0.1):
 
 
 async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
-    a = await sobe(tmp_path, "pc", 45401, 45402)
-    b = await sobe(tmp_path, "celular", 45402, 45401)
+    a = await sobe(tmp_path, "pc", 21401, 21402)
+    b = await sobe(tmp_path, "celular", 21402, 21401)
     try:
         # 1. Descoberta automatica.
         async def conectaram():
@@ -3529,7 +3529,7 @@ async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
 
         assert await espera(caiu), "a queda nao foi detectada"
 
-        b = await sobe(tmp_path, "celular", 45402, 45401)
+        b = await sobe(tmp_path, "celular", 21402, 21401)
 
         async def voltou():
             listagem = await a.handle_command("list", {})
@@ -3546,8 +3546,8 @@ async def test_fluxo_completo_descobrir_parear_pingar_e_reconectar(tmp_path):
 
 
 async def test_terceiro_nao_pareado_nao_consegue_enviar_ping(tmp_path):
-    a = await sobe(tmp_path, "pc", 45403, 45404)
-    intruso = await sobe(tmp_path, "intruso", 45404, 45403)
+    a = await sobe(tmp_path, "pc", 21403, 21404)
+    intruso = await sobe(tmp_path, "intruso", 21404, 21403)
     try:
         async def conectaram():
             return len(a._transport.sessions()) == 1

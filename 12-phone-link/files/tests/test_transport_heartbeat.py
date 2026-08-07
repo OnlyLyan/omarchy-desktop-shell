@@ -8,8 +8,8 @@ from .test_transport_pairing import monta, parear
 
 
 async def test_ping_retorna_latencia_em_milissegundos(tmp_path):
-    a = await monta(tmp_path, "a", 45201)
-    b = await monta(tmp_path, "b", 45202)
+    a = await monta(tmp_path, "a", 21201)
+    b = await monta(tmp_path, "b", 21202)
     try:
         await parear(a, b)
         latencia = await a.tr.ping(b.cfg.device_id)
@@ -21,7 +21,7 @@ async def test_ping_retorna_latencia_em_milissegundos(tmp_path):
 
 
 async def test_ping_para_aparelho_desconhecido_retorna_none(tmp_path):
-    a = await monta(tmp_path, "a", 45203)
+    a = await monta(tmp_path, "a", 21203)
     try:
         assert await a.tr.ping("nao-existe") is None
     finally:
@@ -33,8 +33,8 @@ async def test_queda_limpa_emite_disconnected(tmp_path):
 
     Este caminho nao passa pelo heartbeat, e o teste seguinte cobre o que passa.
     """
-    a = await monta(tmp_path, "a", 45204, ping_interval=0.1, session_timeout=0.3)
-    b = await monta(tmp_path, "b", 45205, ping_interval=0.1, session_timeout=0.3)
+    a = await monta(tmp_path, "a", 21204, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 21205, ping_interval=0.1, session_timeout=0.3)
     try:
         await parear(a, b)
         # Corta o outro lado sem avisar, simulando queda de WiFi.
@@ -58,8 +58,8 @@ async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
     atividade em vez de fechar a conexao: fechar exercitaria o EOF, nao o
     mecanismo de staleness.
     """
-    a = await monta(tmp_path, "a", 45209, ping_interval=0.1, session_timeout=0.3)
-    b = await monta(tmp_path, "b", 45210, ping_interval=0.1, session_timeout=0.3)
+    a = await monta(tmp_path, "a", 21209, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 21210, ping_interval=0.1, session_timeout=0.3)
     try:
         await parear(a, b)
         sessao = a.tr.sessions()[0]
@@ -77,8 +77,8 @@ async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
 
 
 async def test_ensure_connected_nao_abre_segunda_conexao(tmp_path):
-    a = await monta(tmp_path, "a", 45206)
-    b = await monta(tmp_path, "b", 45207)
+    a = await monta(tmp_path, "a", 21206)
+    b = await monta(tmp_path, "b", 21207)
     try:
         await parear(a, b)
         identidade_b = discovery.Identity(
@@ -103,8 +103,8 @@ async def test_pareamento_sobrevive_ao_heartbeat(tmp_path):
     confirmar nos dois aparelhos. Com ping bem mais rapido que o prazo de
     pareamento, o teste reproduz a corrida.
     """
-    a = await monta(tmp_path, "a", 45211, ping_interval=0.05, pair_timeout=5.0)
-    b = await monta(tmp_path, "b", 45212, ping_interval=0.05, pair_timeout=5.0)
+    a = await monta(tmp_path, "a", 21211, ping_interval=0.05, pair_timeout=5.0)
+    b = await monta(tmp_path, "b", 21212, ping_interval=0.05, pair_timeout=5.0)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.1)
@@ -131,8 +131,8 @@ async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
     quando alguem pede o pareamento. Se o heartbeat pulasse a checagem de
     sessao morta para nao pareadas, ela viveria para sempre.
     """
-    a = await monta(tmp_path, "a", 45213, ping_interval=0.1, session_timeout=0.3)
-    b = await monta(tmp_path, "b", 45214, ping_interval=0.1, session_timeout=0.3)
+    a = await monta(tmp_path, "a", 21213, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 21214, ping_interval=0.1, session_timeout=0.3)
     try:
         await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
         await asyncio.sleep(0.15)
@@ -151,7 +151,7 @@ async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
 
 
 async def test_backoff_dobra_e_respeita_o_teto(tmp_path):
-    a = await monta(tmp_path, "a", 45208)
+    a = await monta(tmp_path, "a", 21208)
     try:
         assert a.tr._proximo_backoff("x") == 1.0
         assert a.tr._proximo_backoff("x") == 2.0
