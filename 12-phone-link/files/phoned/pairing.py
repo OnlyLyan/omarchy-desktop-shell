@@ -5,8 +5,10 @@ manter o runtime do daemon com dependencia zero fora da stdlib.
 """
 
 import hashlib
+import json
 import ssl
 import subprocess
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -57,3 +59,85 @@ def fingerprint_from_pem(pem):
 
 def fingerprint_of_file(cert_path):
     return fingerprint_from_pem(Path(cert_path).read_text())
+
+
+def pair_code(fp_a, fp_b):
+    """Codigo que os dois aparelhos exibem para comparacao visual.
+
+    A ordenacao dos fingerprints garante o mesmo resultado nos dois lados,
+    independentemente de quem iniciou o pareamento.
+    """
+    menor, maior = sorted([fp_a, fp_b])
+    return hashlib.sha256((menor + maior).encode("utf-8")).hexdigest()[:6].upper()
+
+
+@dataclass(slots=True)
+class Device:
+    device_id: str
+    name: str
+    fingerprint: str
+    certificate: str
+
+
+class TrustStoreError(Exception):
+    """devices.json ausente de sentido: corrompido ou com formato inesperado."""
+
+
+class TrustStore:
+    def __init__(self, path):
+        self.path = Path(path)
+        self._devices = {}
+
+    def load(self):
+        if not self.path.exists():
+            self._devices = {}
+            return
+        try:
+            dados = json.loads(self.path.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise TrustStoreError(f"{self.path} esta corrompido: {exc}") from exc
+        if not isinstance(dados, dict) or not isinstance(dados.get("devices"), list):
+            raise TrustStoreError(f"{self.path} nao tem o formato esperado")
+        try:
+            self._devices = {
+                item["device_id"]: Device(
+                    device_id=item["device_id"],
+                    name=item["name"],
+                    fingerprint=item["fingerprint"],
+                    certificate=item["certificate"],
+                )
+                for item in dados["devices"]
+            }
+        except (KeyError, TypeError) as exc:
+            raise TrustStoreError(f"{self.path} tem entrada invalida: {exc}") from exc
+
+    def save(self):
+        conteudo = json.dumps(
+            {"version": 1, "devices": [asdict(d) for d in self._devices.values()]},
+            ensure_ascii=False, indent=2,
+        )
+        temporario = self.path.with_suffix(".tmp")
+        temporario.write_text(conteudo + "\n")
+        temporario.chmod(0o600)
+        temporario.replace(self.path)
+
+    def all(self):
+        return list(self._devices.values())
+
+    def get(self, device_id):
+        return self._devices.get(device_id)
+
+    def is_trusted(self, device_id, fingerprint):
+        conhecido = self._devices.get(device_id)
+        return conhecido is not None and conhecido.fingerprint == fingerprint
+
+    def add(self, device):
+        self._devices[device.device_id] = device
+
+    def remove(self, device_id):
+        return self._devices.pop(device_id, None) is not None
+
+    def ca_data(self):
+        if not self._devices:
+            return None
+        return "\n".join(d.certificate.strip() for d in self._devices.values()) + "\n"
