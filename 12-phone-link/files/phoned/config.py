@@ -75,6 +75,12 @@ def load_config(*, state_dir=None, runtime_dir=None, **overrides):
     # A chave privada mora aqui, entao o diretorio nao pode ser legivel por outros.
     state_dir.chmod(0o700)
 
-    overrides.setdefault("name", socket.gethostname())
-    overrides.setdefault("device_id", load_or_create_device_id(state_dir))
+    if "name" not in overrides:
+        overrides["name"] = socket.gethostname()
+    # Guarda explicita em vez de setdefault: o argumento de setdefault e avaliado
+    # sempre, e load_or_create_device_id escreve no disco. Com setdefault, passar
+    # device_id explicito ainda gravaria um UUID fantasma que ninguem usa, bem no
+    # caso de duas instancias no mesmo host durante os testes.
+    if "device_id" not in overrides:
+        overrides["device_id"] = load_or_create_device_id(state_dir)
     return Config(state_dir=state_dir, runtime_dir=runtime_dir, **overrides)

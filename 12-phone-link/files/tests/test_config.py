@@ -52,3 +52,12 @@ def test_caminhos_derivam_dos_diretorios(tmp_path):
 def test_state_dir_tem_permissao_restrita(tmp_path):
     cfg = config.load_config(state_dir=tmp_path / "state", runtime_dir=tmp_path / "run")
     assert cfg.state_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_device_id_explicito_nao_cria_arquivo(tmp_path):
+    cfg = config.load_config(
+        state_dir=tmp_path / "state", runtime_dir=tmp_path / "run",
+        device_id="meu-id-explicito",
+    )
+    assert cfg.device_id == "meu-id-explicito"
+    assert not (cfg.state_dir / "device_id").exists()
