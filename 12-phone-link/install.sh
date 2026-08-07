@@ -9,6 +9,16 @@ UNIDADES="$HOME/.config/systemd/user"
 ESTADO="$HOME/.local/state/phone"
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/phone"
 
+# ATENCAO: nao troque isto por um chmod aqui. O RUNTIME e coberto pelo
+# RuntimeDirectory=phone dentro da propria unit (files/phoned.service), que o
+# systemd recria em %t/phone a cada start, antes de montar o namespace. Um
+# mkdir feito so aqui, na instalacao, sobreviveria ate o proximo reboot: o
+# XDG_RUNTIME_DIR e tmpfs e volta vazio, e o servico morreria em loop de
+# restart no primeiro boot depois de instalado (esse foi o defeito que a
+# revisao encontrou). O ESTADO nao tem essa protecao (nao ha
+# StateDirectory= na unit, so ReadWritePaths=), entao continua precisando
+# ser criado aqui.
+
 echo ">> conferindo dependencias"
 command -v python3 >/dev/null || { echo "faltou python3"; exit 1; }
 command -v openssl >/dev/null || { echo "faltou openssl"; exit 1; }
@@ -29,14 +39,14 @@ chmod +x "$LIB/run-phoned"
 echo ">> instalando o phonectl em $BIN"
 install -m 755 "$AQUI/files/phonectl" "$BIN/phonectl"
 
-# O ReadWritePaths da unit exige que os dois diretorios ja existam antes do
-# primeiro start: sem isto o systemd recusa montar o namespace com "No such
-# file or directory" e o daemon nunca chega a rodar (confirmado com
-# systemd-run --user de teste). O daemon cria os dois de novo sozinho, mas
-# so depois que o processo ja subiu, o que e tarde demais para a montagem.
-echo ">> preparando estado ($ESTADO) e diretorio de execucao ($RUNTIME)"
-mkdir -p "$ESTADO" "$RUNTIME"
-chmod 700 "$ESTADO" "$RUNTIME"
+# O ReadWritePaths da unit exige que o caminho ja exista antes do primeiro
+# start: sem isto o systemd recusa montar o namespace com "No such file or
+# directory" e o daemon nunca chega a rodar (confirmado com systemd-run
+# --user de teste). O RUNTIME nao entra aqui: e RuntimeDirectory=phone na
+# propria unit que cuida dele, a cada start, ver comentario acima.
+echo ">> preparando o diretorio de estado ($ESTADO)"
+mkdir -p "$ESTADO"
+chmod 700 "$ESTADO"
 
 echo ">> instalando a unit do systemd"
 # Reescreve por completo em vez de anexar, entao rodar de novo nao duplica nada.

@@ -9,6 +9,13 @@ Type=simple
 ExecStart=%h/.local/lib/phone/run-phoned
 Restart=always
 RestartSec=5
+# O systemd recria este diretorio a cada start, antes de montar o namespace.
+# Sem isto o servico morre no primeiro boot depois da instalacao: o
+# XDG_RUNTIME_DIR fica em tmpfs e volta vazio, o diretorio criado uma unica vez
+# pelo install.sh some, e o ProtectSystem=strict falha por ReadWritePaths
+# apontar para caminho inexistente. O resultado seria loop de restart eterno.
+RuntimeDirectory=phone
+RuntimeDirectoryMode=0700
 # O daemon guarda chave privada, entao o diretorio de estado fica so para o dono.
 UMask=0077
 # Endurecimento: o daemon so precisa de rede e do proprio estado.

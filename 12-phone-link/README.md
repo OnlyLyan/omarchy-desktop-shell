@@ -139,13 +139,42 @@ Esta secao e o que a fatia 2 (painel QML na barra) vai consumir. O socket fica e
 | `ping` | `{"device_id": "..."}` | `ping.result` | `{"latency_ms": 12.5, "request_id": "..."}` |
 | `connect` | `{"host": "...", "port": 1739}` | `connect.result` | `{"ok": true, "request_id": "..."}` |
 
-Exemplo de linha, pedido de `pair`:
+Uma linha de pedido e resposta por comando, para copiar direto:
+
+`list`:
+```json
+{"id":"1f0a...","type":"list","ts":1754591000,"body":{}}
+{"id":"...","type":"list.result","ts":1754591000,"body":{"devices":[{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111","name":"Pixel do Lucas","paired":true,"connected":true,"address":"192.168.0.42"}],"request_id":"1f0a..."}}
+```
+
+`pair`:
 ```json
 {"id":"3f1e6c02-8b1a-4b1e-9c3a-000000000001","type":"pair","ts":1754591000,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111"}}
-```
-Resposta correspondente:
-```json
 {"id":"7d2a9e10-...","type":"pair.result","ts":1754591000,"body":{"ok":true,"request_id":"3f1e6c02-8b1a-4b1e-9c3a-000000000001"}}
+```
+
+`confirm`:
+```json
+{"id":"2b3c...","type":"confirm","ts":1754591020,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111","accept":true}}
+{"id":"...","type":"confirm.result","ts":1754591020,"body":{"ok":true,"request_id":"2b3c..."}}
+```
+
+`unpair`:
+```json
+{"id":"9a1d...","type":"unpair","ts":1754591030,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111"}}
+{"id":"...","type":"unpair.result","ts":1754591030,"body":{"ok":true,"request_id":"9a1d..."}}
+```
+
+`ping`:
+```json
+{"id":"5e6f...","type":"ping","ts":1754591040,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111"}}
+{"id":"...","type":"ping.result","ts":1754591040,"body":{"latency_ms":12.5,"request_id":"5e6f..."}}
+```
+
+`connect`:
+```json
+{"id":"7c8d...","type":"connect","ts":1754591050,"body":{"host":"192.168.0.42","port":1739}}
+{"id":"...","type":"connect.result","ts":1754591050,"body":{"ok":true,"request_id":"7c8d..."}}
 ```
 
 Pedido malformado ou comando que estourou excecao vira `error`:
@@ -162,9 +191,27 @@ Pedido malformado ou comando que estourou excecao vira `error`:
 | `pair.result` | Pareamento terminou (aceito, recusado ou expirou) | `{"device_id", "accepted": true ou false, "reason"?}` |
 | `pong` | Daemon recebeu `PONG` do aparelho (inclusive do heartbeat periodico, nao so de `phonectl ping`) | `{"device_id", "echo_id"}` |
 
-Exemplo de `pair.prompt`:
+Uma linha de exemplo por evento:
+
+`device.state`:
+```json
+{"id":"...","type":"device.state","ts":1754591005,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111","name":"Pixel do Lucas","address":"192.168.0.42","paired":false,"state":"connected"}}
+```
+
+`pair.prompt`:
 ```json
 {"id":"...","type":"pair.prompt","ts":1754591010,"body":{"device_id":"a1b2c3d4-...","name":"Pixel do Lucas","code":"4F0C2A"}}
+```
+
+`pair.result` (evento, nao a resposta do comando; note a ausencia de `request_id`, ver a secao
+seguinte):
+```json
+{"id":"...","type":"pair.result","ts":1754591015,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111","accepted":true}}
+```
+
+`pong`:
+```json
+{"id":"...","type":"pong","ts":1754591045,"body":{"device_id":"a1b2c3d4-e5f6-47a8-9b0c-111111111111","echo_id":"5e6f..."}}
 ```
 
 ### A armadilha do `pair.result`: correlacione por `request_id`, nunca so pelo `type`
