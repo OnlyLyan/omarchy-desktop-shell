@@ -537,6 +537,12 @@ class Transport:
             await asyncio.sleep(self._cfg.ping_interval)
             agora = asyncio.get_running_loop().time()
             for sessao in list(self._sessions.values()):
+                if not sessao.paired:
+                    # Sessao em pareamento nao leva ping: phone.ping nao comeca
+                    # com pair., entao o gate do outro lado derrubaria a conexao
+                    # antes de o usuario confirmar o codigo. Quem cuida do prazo
+                    # dela e o pair_timeout.
+                    continue
                 visto = self._ultimo_pacote.get(id(sessao), agora)
                 if agora - visto > self._cfg.session_timeout:
                     log.info("sessao com %s sem resposta, encerrando", sessao.device_id)

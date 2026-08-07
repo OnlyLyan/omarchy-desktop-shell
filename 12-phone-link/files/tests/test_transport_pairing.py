@@ -17,11 +17,21 @@ class Par:
         return [p for k, p in self.eventos if k == kind]
 
 
-async def monta(tmp_path, nome, porta):
+async def monta(tmp_path, nome, porta, **overrides):
+    """Sobe um Transport isolado.
+
+    Os overrides existem porque mudar cfg depois de start() nao adianta para
+    intervalos: o laco de heartbeat ja entrou no primeiro sleep com o valor
+    antigo. Quem testa temporizacao precisa configurar antes de subir.
+    """
+    parametros = {
+        "name": nome, "tcp_port": porta, "discovery_port": porta,
+        "announce_targets": [], "pair_timeout": 1.0,
+    }
+    parametros.update(overrides)
     cfg = config.load_config(
         state_dir=tmp_path / nome / "state", runtime_dir=tmp_path / nome / "run",
-        name=nome, tcp_port=porta, discovery_port=porta,
-        announce_targets=[], pair_timeout=1.0,
+        **parametros,
     )
     pairing.ensure_certificate(cfg.cert_path, cfg.key_path, cfg.device_id)
     trust = pairing.TrustStore(cfg.devices_path)
