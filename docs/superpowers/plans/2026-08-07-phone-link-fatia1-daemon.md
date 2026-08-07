@@ -2173,20 +2173,52 @@ async def test_ping_para_aparelho_desconhecido_retorna_none(tmp_path):
         await a.tr.stop()
 
 
-async def test_sessao_morta_por_timeout_emite_disconnected(tmp_path):
+async def test_queda_limpa_emite_disconnected(tmp_path):
+    """Fechamento educado do outro lado: o EOF do laco de leitura resolve.
+
+    Este caminho nao passa pelo heartbeat, e o teste seguinte cobre o que passa.
+    """
     a = await monta(tmp_path, "a", 45204)
     b = await monta(tmp_path, "b", 45205)
     a.cfg.ping_interval = 0.1
     a.cfg.session_timeout = 0.3
     try:
         await parear(a, b)
-        # Corta o outro lado sem avisar, simulando queda de WiFi.
         for sessao in b.tr.sessions():
             await sessao.close()
         await asyncio.sleep(1.0)
         estados = [p for k, p in a.eventos if k == "device.state"]
         assert estados[-1]["state"] == "disconnected"
         assert a.tr.sessions() == []
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
+    """Socket vivo e mudo, que e o que acontece de verdade quando o WiFi cai.
+
+    Nao ha FIN nesse caso: o socket continua aberto e nunca chega EOF. Sem o
+    heartbeat a sessao ficaria pendurada para sempre, e o aparelho apareceria
+    como conectado sem estar. Por isso o teste envelhece o registro de
+    atividade em vez de fechar a conexao: fechar exercitaria o EOF, nao o
+    mecanismo de staleness.
+    """
+    a = await monta(tmp_path, "a", 45209)
+    b = await monta(tmp_path, "b", 45210)
+    a.cfg.ping_interval = 0.1
+    a.cfg.session_timeout = 0.3
+    try:
+        await parear(a, b)
+        sessao = a.tr.sessions()[0]
+        agora = asyncio.get_running_loop().time()
+        a.tr._ultimo_pacote[id(sessao)] = agora - 999
+
+        await asyncio.sleep(0.6)
+
+        assert a.tr.sessions() == [], "o heartbeat deveria ter derrubado a sessao"
+        estados = [p for k, p in a.eventos if k == "device.state"]
+        assert estados[-1]["state"] == "disconnected"
     finally:
         await a.tr.stop()
         await b.tr.stop()
