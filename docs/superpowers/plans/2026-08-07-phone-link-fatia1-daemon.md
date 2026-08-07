@@ -2648,6 +2648,11 @@ class IpcServer:
         os.chmod(self.path, 0o600)
 
     async def stop(self):
+        # Cede o controle uma vez antes de fechar. Sem isto, uma conexao ja
+        # aceita pelo sistema mas ainda nao despachada pelo asyncio faz o
+        # Server acordar duas vezes durante o close, e a excecao resultante
+        # aparece como PytestUnraisableExceptionWarning na saida dos testes.
+        await asyncio.sleep(0)
         for writer in list(self._clientes):
             writer.close()
         self._clientes.clear()
