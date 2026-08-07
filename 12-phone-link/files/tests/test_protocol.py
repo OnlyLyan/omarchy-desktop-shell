@@ -27,7 +27,7 @@ def test_encode_produz_uma_linha_terminada_em_newline():
 
 
 def test_encode_e_decode_sao_reciprocos():
-    packet = protocol.make_packet("identity", {"name": "acentuacao"}, packet_id="a", ts=1)
+    packet = protocol.make_packet("identity", {"name": "acentuação"}, packet_id="a", ts=1)
     assert protocol.decode(protocol.encode(packet)) == packet
 
 
