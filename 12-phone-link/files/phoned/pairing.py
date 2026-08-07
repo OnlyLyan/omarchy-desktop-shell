@@ -8,7 +8,7 @@ import hashlib
 import json
 import ssl
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 
