@@ -245,6 +245,9 @@ class Transport:
 
     async def _encerra(self, sessao):
         await sessao.close()
+        # Sem isto o mapa cresce uma entrada por sessao que ja existiu, e ainda
+        # abre espaco para colisao: o CPython reaproveita o id de objeto morto.
+        self._ultimo_pacote.pop(id(sessao), None)
         if sessao.device_id and self._sessions.get(sessao.device_id) is sessao:
             del self._sessions[sessao.device_id]
             self._emit("device.state", {
@@ -537,16 +540,19 @@ class Transport:
             await asyncio.sleep(self._cfg.ping_interval)
             agora = asyncio.get_running_loop().time()
             for sessao in list(self._sessions.values()):
-                if not sessao.paired:
-                    # Sessao em pareamento nao leva ping: phone.ping nao comeca
-                    # com pair., entao o gate do outro lado derrubaria a conexao
-                    # antes de o usuario confirmar o codigo. Quem cuida do prazo
-                    # dela e o pair_timeout.
-                    continue
+                # A checagem de sessao morta vale para todas, pareadas ou nao.
+                # Uma sessao que se identificou e nunca pediu pareamento nao tem
+                # pair_timeout para cuidar dela, e ficaria pendurada para sempre
+                # se so as pareadas fossem verificadas aqui.
                 visto = self._ultimo_pacote.get(id(sessao), agora)
                 if agora - visto > self._cfg.session_timeout:
                     log.info("sessao com %s sem resposta, encerrando", sessao.device_id)
                     await self._encerra(sessao)
+                    continue
+                if not sessao.paired:
+                    # O que a sessao em pareamento nao pode receber e o ping:
+                    # phone.ping nao comeca com pair., entao o gate do outro lado
+                    # derrubaria a conexao antes de o usuario confirmar o codigo.
                     continue
                 try:
                     await sessao.send(protocol.make_packet(PING))

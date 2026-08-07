@@ -33,10 +33,8 @@ async def test_queda_limpa_emite_disconnected(tmp_path):
 
     Este caminho nao passa pelo heartbeat, e o teste seguinte cobre o que passa.
     """
-    a = await monta(tmp_path, "a", 45204)
-    b = await monta(tmp_path, "b", 45205)
-    a.cfg.ping_interval = 0.1
-    a.cfg.session_timeout = 0.3
+    a = await monta(tmp_path, "a", 45204, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 45205, ping_interval=0.1, session_timeout=0.3)
     try:
         await parear(a, b)
         # Corta o outro lado sem avisar, simulando queda de WiFi.
@@ -121,6 +119,32 @@ async def test_pareamento_sobrevive_ao_heartbeat(tmp_path):
         await a.tr.confirm_pair(b.cfg.device_id, True)
         await asyncio.sleep(0.2)
         assert a.trust.get(b.cfg.device_id) is not None
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_sessao_nao_pareada_e_muda_tambem_e_reapada(tmp_path):
+    """Quem se identifica e nunca pede pareamento nao fica pendurado.
+
+    Essa sessao nao tem pair_timeout cuidando dela, porque o prazo so nasce
+    quando alguem pede o pareamento. Se o heartbeat pulasse a checagem de
+    sessao morta para nao pareadas, ela viveria para sempre.
+    """
+    a = await monta(tmp_path, "a", 45213, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 45214, ping_interval=0.1, session_timeout=0.3)
+    try:
+        await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+        await asyncio.sleep(0.15)
+        assert a.tr.sessions(), "a sessao deveria ter subido"
+        sessao = a.tr.sessions()[0]
+        assert sessao.paired is False
+
+        agora = asyncio.get_running_loop().time()
+        a.tr._ultimo_pacote[id(sessao)] = agora - 999
+        await asyncio.sleep(0.5)
+
+        assert a.tr.sessions() == [], "sessao nao pareada e muda deveria cair"
     finally:
         await a.tr.stop()
         await b.tr.stop()
