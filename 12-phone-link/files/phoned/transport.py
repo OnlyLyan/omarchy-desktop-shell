@@ -75,11 +75,19 @@ class Session:
             await self._writer.drain()
 
     async def read_packet(self):
-        linha = await self._reader.readline()
+        try:
+            linha = await self._reader.readline()
+        except ValueError as exc:
+            # StreamReader estoura ValueError quando a linha passa do limite do
+            # buffer. Sem esta traducao vazaria um tipo que o laco de leitura nao
+            # espera. Defesa em profundidade: quem abre a conexao ja passa
+            # limit=MAX_LINE_BYTES, entao chegar aqui significa linha alem do
+            # que o protocolo admite.
+            raise protocol.ProtocolError(f"linha acima do limite do buffer: {exc}") from exc
         if not linha:
             return None
-        if len(linha) >= protocol.MAX_LINE_BYTES:
-            raise protocol.ProtocolError("linha acima do limite")
+        # O tamanho e validado uma vez so, dentro de decode. Repetir a checagem
+        # aqui ja custou uma divergencia de um byte entre os dois lugares.
         return protocol.decode(linha)
 
     async def close(self):
