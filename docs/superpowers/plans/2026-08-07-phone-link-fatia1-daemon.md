@@ -1113,6 +1113,15 @@ git commit -m "feat(phone-link): descoberta por broadcast UDP com identidade val
 
 **Nota de fundo, verificada no sistema em 2026-08-07:** com `CERT_NONE` no servidor, `getpeercert(binary_form=True)` retorna `None` porque o cliente não é sequer solicitado a apresentar certificado. Com `CERT_OPTIONAL` mais `load_verify_locations(cadata=...)`, retorna o DER do cliente e a validação é real. O cliente sempre enxerga o certificado do servidor, mesmo com `CERT_NONE`, porque `binary_form=True` devolve o certificado independentemente de validação. É essa assimetria que o modelo de pareamento contorna.
 
+**Segunda nota, também verificada nesta máquina:** quando o servidor recusa o certificado do
+cliente, o lado cliente **não** recebe exceção. Em TLS 1.3 o handshake do cliente termina antes
+de ele saber o veredito, o `write` seguinte ainda passa, e a recusa aparece só como EOF limpo na
+primeira leitura. Do lado do servidor, o handler de conexão nunca chega a ser invocado.
+
+A consequência prática, que a fatia 2 vai querer melhorar: um aparelho recusado é
+indistinguível de um aparelho que saiu do WiFi, porque os dois viram "conexão encerrada". O
+backoff da Task 8 evita reconexão em loop apertado, mas o motivo real não aparece no log.
+
 - [ ] **Step 1: Escrever os testes que falham**
 
 `12-phone-link/files/tests/test_transport_tls.py`:
@@ -1177,11 +1186,44 @@ async def test_com_pareamento_a_autenticacao_e_mutua(par_de_certificados):
 async def test_cliente_desconhecido_e_recusado_quando_o_servidor_ja_confia_em_outro(
     par_de_certificados, tmp_path
 ):
+    """O servidor confia so no terceiro, entao o cliente nao entra.
+
+    Em TLS 1.3 o handshake do cliente termina ANTES de ele saber se o servidor
+    aceitou seu certificado, e a recusa chega depois como EOF limpo, nao como
+    excecao. Verificado nesta maquina com Python 3.14.6 e OpenSSL 3.6.3. Por
+    isso o teste observa o efeito, conexao morta e handler nunca invocado, em
+    vez de esperar um erro que nunca vem.
+    """
     servidor, cliente = par_de_certificados
     terceiro = (tmp_path / "t-cert.pem", tmp_path / "t-key.pem")
     pairing.ensure_certificate(*terceiro, "terceiro")
-    with pytest.raises(ssl.SSLError):
-        await conecta(servidor, cliente, ca_data=terceiro[0].read_text(), present_cert=True)
+
+    aceitou = []
+
+    async def handler(reader, writer):
+        aceitou.append(True)
+        writer.close()
+
+    sctx = transport.build_server_context(
+        servidor[0], servidor[1], terceiro[0].read_text()
+    )
+    srv = await asyncio.start_server(handler, "127.0.0.1", 0, ssl=sctx)
+    porta = srv.sockets[0].getsockname()[1]
+
+    cctx = transport.build_client_context(cliente[0], cliente[1], present_cert=True)
+    reader, writer = await asyncio.open_connection("127.0.0.1", porta, ssl=cctx)
+    writer.write(b'{"id":"a","type":"phone.ping","ts":1,"body":{}}\n')
+    try:
+        await writer.drain()
+    except (ssl.SSLError, ConnectionError):
+        pass
+
+    assert await reader.readline() == b"", "o servidor deveria ter derrubado a conexao"
+    assert aceitou == [], "o handler nao deveria ter sido invocado"
+
+    writer.close()
+    srv.close()
+    await srv.wait_closed()
 
 
 async def test_contexto_exige_tls_1_3(par_de_certificados):
