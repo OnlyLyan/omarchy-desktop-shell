@@ -111,9 +111,12 @@ class Discovery:
                 log.warning("falha ao anunciar para %s:%s: %s", host, porta, exc)
 
     async def _laco(self):
+        # Anuncia na entrada, nao depois do sleep: o spec exige broadcast ao
+        # iniciar, e ninguem mais chama announce() na subida do daemon. Dormir
+        # primeiro deixaria o aparelho invisivel por announce_interval inteiro.
         while True:
-            await asyncio.sleep(self._cfg.announce_interval)
             self.announce()
+            await asyncio.sleep(self._cfg.announce_interval)
 
     def _on_datagram(self, data, source_ip):
         try:
