@@ -67,3 +67,21 @@ def test_fingerprint_de_pem_e_de_der_coincidem(tmp_path):
 def test_fingerprint_de_pem_invalido_levanta_erro():
     with pytest.raises(pairing.CertificateError):
         pairing.fingerprint_from_pem("isso nao e um certificado")
+
+
+def test_openssl_ausente_vira_certificate_error(tmp_path, monkeypatch):
+    def falha(*args, **kwargs):
+        raise FileNotFoundError("openssl nao existe")
+
+    monkeypatch.setattr(pairing.subprocess, "run", falha)
+    with pytest.raises(pairing.CertificateError):
+        pairing.ensure_certificate(tmp_path / "c.pem", tmp_path / "k.pem", "id")
+
+
+def test_openssl_travado_vira_certificate_error(tmp_path, monkeypatch):
+    def trava(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="openssl", timeout=30)
+
+    monkeypatch.setattr(pairing.subprocess, "run", trava)
+    with pytest.raises(pairing.CertificateError):
+        pairing.ensure_certificate(tmp_path / "c.pem", tmp_path / "k.pem", "id")
