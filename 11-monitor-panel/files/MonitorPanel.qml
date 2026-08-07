@@ -21,7 +21,7 @@ ColumnLayout {
     // ===== IO: ler estado =====
     Process {
         id: getProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "get"]
+        command: ["/home/vings/.config/quickshell/scripts/monitors.sh", "get"]
         stdout: StdioCollector { onStreamFinished: panel._ingest(this.text) }
     }
     function reload() { getProc.running = true }
@@ -183,7 +183,7 @@ ColumnLayout {
     Process { id: previewProc; onExited: panel.applied() }
     function preview() {
         if (!_anyEnabled()) return;
-        previewProc.command = ["/home/lucas/.config/quickshell/scripts/monitors.sh", "preview"].concat(_lines());
+        previewProc.command = ["/home/vings/.config/quickshell/scripts/monitors.sh", "preview"].concat(_lines());
         previewProc.running = true;
     }
 
@@ -192,7 +192,7 @@ ColumnLayout {
     function loadProfiles() { profListProc.running = true }
     Process {
         id: profListProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "profiles-list"]
+        command: ["/home/vings/.config/quickshell/scripts/monitors.sh", "profiles-list"]
         stdout: StdioCollector { onStreamFinished: panel.profiles = this.text.trim() ? this.text.trim().split("\n") : [] }
     }
 

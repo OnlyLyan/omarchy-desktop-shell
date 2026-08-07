@@ -47,13 +47,21 @@ restore_addr() {
 }
 
 # maximiza a janela alvo (estilo Windows: 1 janela cheia, respeita a barra reservada).
-# idempotente: so aplica se ainda nao estiver maximizada (fullscreen != 1). fullscreen 1 = maximize.
+# = MESMO "modo SUPER+F" (maximize-toggle.sh): fullscreen interno modo 1, NUNCA a tela
+# cheia real do F11 (modo 2) nem a fullscreen pedida pelo app (fullscreenClient).
+# .fullscreen = estado interno (0 nenhum / 1 maximize / 2 fullscreen real)
+# .fullscreenClient = fullscreen pedido pelo app (navegador via F11, video, etc.)
 maximize_addr() {
   [ "$do_max" = "1" ] || return 0
-  local addr="$1" st
-  st="$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[]|select(.address==$a)|.fullscreen')"
-  [ "$st" = "1" ] && return 0
+  local addr="$1" st fs fsc
+  st="$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[]|select(.address==$a)|"\(.fullscreen // 0) \(.fullscreenClient // 0)"')"
+  fs="${st%% *}"; fsc="${st##* }"
   hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+  # ja esta exatamente no modo SUPER+F (maximize puro, sem fullscreen de app) -> nada a fazer.
+  [ "$fs" = "1" ] && [ "$fsc" = "0" ] && return 0
+  # limpa QUALQUER fullscreen (interno + do app) antes de maximizar, senao a janela
+  # entra/fica no modo F11 (tela cheia real) em vez do modo SUPER+F.
+  [ "$fs" != "0" ] || [ "$fsc" != "0" ] && hyprctl dispatch fullscreenstate 0 0 >/dev/null 2>&1
   hyprctl dispatch fullscreen 1 >/dev/null 2>&1
 }
 

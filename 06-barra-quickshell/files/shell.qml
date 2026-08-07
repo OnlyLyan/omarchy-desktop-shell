@@ -99,7 +99,7 @@ ShellRoot {
     // le e observa o colors.toml; chama theme.parse no load e a cada troca de tema
     FileView {
         id: themeFile
-        path: "/home/lucas/.config/omarchy/current/theme/colors.toml"
+        path: "/home/vings/.config/omarchy/current/theme/colors.toml"
         watchChanges: true
         // API confirmada (Quickshell.Io FileView): text() le conteudo, signals
         // loaded/fileChanged, metodo reload(). parse roda no load inicial e em
@@ -131,13 +131,13 @@ ShellRoot {
     property int monPending: 0
     Process {
         id: monPendingProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "pending"]
+        command: ["/home/vings/.config/quickshell/scripts/monitors.sh", "pending"]
         stdout: StdioCollector { onStreamFinished: { var n = parseInt(this.text.trim()); root.monPending = isNaN(n) ? 0 : n; } }
     }
     // Confirmar persiste e AGORA recarrega a cena, que e quando os surfaces (barra) sao
     // corrigidos pra nova geometria. Reverter/watchdog tambem recarregam.
-    Process { id: monConfirmProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "confirm"]; onExited: Quickshell.reload(true) }
-    Process { id: monCancelProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "cancel"]; onExited: Quickshell.reload(true) }
+    Process { id: monConfirmProc; command: ["/home/vings/.config/quickshell/scripts/monitors.sh", "confirm"]; onExited: Quickshell.reload(true) }
+    Process { id: monCancelProc; command: ["/home/vings/.config/quickshell/scripts/monitors.sh", "cancel"]; onExited: Quickshell.reload(true) }
     Timer {
         id: monPendingTimer; interval: 1000; repeat: true; running: root.monPending > 0
         onTriggered: { root.monPending--; }  // cosmetico; o revert real e do watchdog
@@ -235,7 +235,7 @@ ShellRoot {
     property bool wifiBusy: false
     Process {
         id: wifiListProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "list"]
+        command: ["/home/vings/.config/quickshell/scripts/wifi.sh", "list"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -255,15 +255,15 @@ ShellRoot {
     }
     Process {
         id: wifiStateProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "state"]
+        command: ["/home/vings/.config/quickshell/scripts/wifi.sh", "state"]
         stdout: StdioCollector { onStreamFinished: root.wifiActive = this.text.trim() }
     }
-    Process { id: wifiScanProc; command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "scan"] }
+    Process { id: wifiScanProc; command: ["/home/vings/.config/quickshell/scripts/wifi.sh", "scan"] }
     Process { id: wifiActProc }   // connect/disconnect/forget (command setado em wifiCmd)
     function refreshWifi() { wifiListProc.running = true; wifiStateProc.running = true; }
     function scanWifi() { wifiScanProc.running = true; root.wifiBusy = true; }
     function wifiCmd(args) {
-        wifiActProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh"].concat(args);
+        wifiActProc.command = ["/home/vings/.config/quickshell/scripts/wifi.sh"].concat(args);
         wifiActProc.running = true;
     }
     property var wifiDetails: []
@@ -285,7 +285,7 @@ ShellRoot {
     }
     function wifiFetchDetails(ssid) {
         root.wifiDetails = [];
-        wifiDetailsProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh", "details", ssid];
+        wifiDetailsProc.command = ["/home/vings/.config/quickshell/scripts/wifi.sh", "details", ssid];
         wifiDetailsProc.running = true;
     }
 
@@ -342,43 +342,28 @@ ShellRoot {
     // O painel faz a busca de wallpaper (8799). Ambos vivem com o qsbar.
     Process {
         id: wpaCollector
-        command: ["python3", "/home/lucas/claude-agents-wallpaper/collector/serve.py"]
-        running: true
+        command: ["python3", "/home/vings/claude-agents-wallpaper/collector/serve.py"]
+        running: false
     }
     Process {
         id: wpaPanelServer
-        command: ["python3", "/home/lucas/claude-agents-wallpaper/panel/panel_server.py"]
-        running: true
+        command: ["python3", "/home/vings/claude-agents-wallpaper/panel/panel_server.py"]
+        running: false
     }
 
-    // grafo de agentes na camada Bottom (substitui o host GTK4+WebKit)
-    AgentGraph {
-        id: agentGraph
-        // config lida de ~/.config/wpa/config.json (Task 6); padrao: todos os monitores, 30fps
-        enabledMonitors: root.wpaMonitors
-        fps: root.wpaFps
-    }
+    // grafo de agentes (Claude Agents Wallpaper) removido: o componente AgentGraph nao
+    // existe no repo upstream (feature pessoal inacabada do autor) e quebrava o qsbar.
 
     // ---- temas Omarchy: lista (nome+fundo+accent) + tema atual ----
     property var themes: []
     property string currentTheme: ""
-    property var favorites: []            // slugs favoritados, na ordem do arquivo theme-favorites
-    property string themeMenuOpenFor: ""  // slug com o menu de contexto aberto (so um por vez)
-    function isFav(snake) { return root.favorites.indexOf(snake) !== -1; }
-    // ordem de exibicao: tema atual primeiro, depois favoritos (ordem do arquivo), depois resto alfabetico
+    // ordem de exibicao: tema atual primeiro, resto alfabetico
     readonly property var orderedThemes: {
         var a = themes.slice();
-        var fav = root.favorites;
-        function rank(t) {
-            if (t.snake === currentTheme) return -1;   // atual sempre primeiro
-            var fi = fav.indexOf(t.snake);
-            if (fi !== -1) return fi;                   // favoritos na ordem em que foram favoritados
-            return 100000;                              // resto depois
-        }
         a.sort(function (x, y) {
-            var rx = rank(x), ry = rank(y);
-            if (rx !== ry) return rx - ry;
-            return x.snake < y.snake ? -1 : (x.snake > y.snake ? 1 : 0);  // desempate alfabetico
+            if (x.snake === currentTheme) return -1;
+            if (y.snake === currentTheme) return 1;
+            return x.snake < y.snake ? -1 : (x.snake > y.snake ? 1 : 0);
         });
         return a;
     }
@@ -413,32 +398,10 @@ ShellRoot {
     }
     Process {
         id: curThemeProc
-        command: ["cat", "/home/lucas/.config/omarchy/current/theme.name"]
+        command: ["cat", "/home/vings/.config/omarchy/current/theme.name"]
         stdout: StdioCollector { onStreamFinished: { root.currentTheme = this.text.trim(); } }
     }
-    // le a lista de favoritos (um slug por linha)
-    Process {
-        id: favReadProc
-        command: ["cat", "/home/lucas/.config/omarchy/theme-favorites"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                var out = [], lines = this.text.split("\n");
-                for (var i = 0; i < lines.length; i++) {
-                    var s = lines[i].trim();
-                    if (s.length && out.indexOf(s) === -1) out.push(s);
-                }
-                root.favorites = out;
-            }
-        }
-    }
-    // alterna favorito e recarrega a lista ao terminar (grade reordena + estrela atualiza)
-    Process { id: favToggleProc; onExited: favReadProc.running = true }
-    function toggleFav(snake) {
-        favToggleProc.command = ["/home/lucas/.local/bin/omarchy-theme-fav", "toggle", snake];
-        favToggleProc.running = true;
-        root.themeMenuOpenFor = "";
-    }
-    function refreshThemes() { themesProc.running = true; curThemeProc.running = true; favReadProc.running = true; }
+    function refreshThemes() { themesProc.running = true; curThemeProc.running = true; }
     function setTheme(snake) { Quickshell.execDetached(["omarchy-theme-set", snake]); root.currentTheme = snake; }
 
     // ---- update do Omarchy disponivel? (git ls-remote, poll raro) ----
@@ -494,7 +457,7 @@ ShellRoot {
     // reconciliam o estado real um pouco depois (o clique ja virou na hora, otimista)
     Timer { id: tgDelay; interval: 800; repeat: false; onTriggered: tgProc.running = true }
     function toggleCaffeine() { tg.caffeine = !tg.caffeine; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-idle"]); tgDelay.restart(); }
-    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["/home/lucas/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
+    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["/home/vings/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
     function toggleMic() { tg.micMuted = !tg.micMuted; Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]); tgDelay.restart(); }
 
     // ============ volume do dispositivo de SAIDA REAL ============
@@ -505,7 +468,7 @@ ShellRoot {
     property real pendingVol: -1
     Process {
         id: volProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "get"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "get"]
         stdout: StdioCollector {
             onStreamFinished: {
                 if (root.volDragging) return;   // nao sobrescreve o valor enquanto arrasta
@@ -527,7 +490,7 @@ ShellRoot {
         id: volApply; interval: 90; repeat: false
         onTriggered: {
             if (root.pendingVol >= 0) {
-                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh",
+                Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh",
                     "set", "" + Math.round(root.pendingVol * 100)]);
                 root.pendingVol = -1;
             }
@@ -541,7 +504,7 @@ ShellRoot {
     }
     function toggleVolMute() {
         vols.mut = !vols.mut;     // otimista
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "toggle"]);
+        Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "toggle"]);
     }
 
     // ---- painel de audio estilo Windows: dispositivos de saida + volume por app + bass ----
@@ -552,7 +515,7 @@ ShellRoot {
     property var mirrorSel: []         // names dos dispositivos marcados pro espelho
     Process {
         id: sinksProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sinks"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "sinks"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -564,7 +527,7 @@ ShellRoot {
     }
     Process {
         id: appsProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "apps"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "apps"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -576,12 +539,12 @@ ShellRoot {
     }
     Process {
         id: bassGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-get"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "bass-get"]
         stdout: StdioCollector { onStreamFinished: root.bassOn = (this.text.trim() === "1") }
     }
     Process {
         id: mirrorGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-get"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "mirror-get"]
         stdout: StdioCollector { onStreamFinished: {
             var s = this.text.trim();
             if (s.length > 0) { root.mirrorMode = true; root.mirrorSel = s.split(","); }
@@ -598,7 +561,7 @@ ShellRoot {
     property var micSources: []
     Process {
         id: micGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-get"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "mic-get"]
         stdout: StdioCollector { onStreamFinished: {
             if (root.micDragging) return;
             var p = this.text.trim().split(" "); mics.vol = (parseInt(p[0]) || 0) / 100; mics.mut = p[1] === "1";
@@ -606,7 +569,7 @@ ShellRoot {
     }
     Process {
         id: micSrcProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sources"]
+        command: ["/home/vings/.config/quickshell/scripts/audio.sh", "sources"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -616,16 +579,16 @@ ShellRoot {
         } }
     }
     Timer { id: micApply; interval: 90; repeat: false; onTriggered: {
-        if (root.micPending >= 0) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
+        if (root.micPending >= 0) { Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
     function refreshMic() { micGetProc.running = true; micSrcProc.running = true; }
     function setMicVol(f) { var ff = Math.max(0, Math.min(1, f)); mics.vol = ff; root.micPending = ff; if (!micApply.running) micApply.start(); }
-    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
-    function setInput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "input", name]);
+    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
+    function setInput(name) { Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "input", name]);
                               for (var i = 0; i < micSources.length; i++) micSources[i].active = (micSources[i].name === name);
                               micSources = micSources.slice(); audioRefresh.restart(); }
 
     function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; mirrorGetProc.running = true; root.refreshVol(); root.refreshMic(); }
-    function setOutput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", name]);
+    function setOutput(name) { Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "output", name]);
                                for (var i = 0; i < audioSinks.length; i++) audioSinks[i].active = (audioSinks[i].name === name);
                                audioSinks = audioSinks.slice(); audioRefresh.restart(); }
     // ---- espelho: tocar em varios dispositivos ao mesmo tempo (combine-sink) ----
@@ -642,7 +605,7 @@ ShellRoot {
         } else {
             // sai do modo espelho: desfaz o combine, volta pro 1o dispositivo
             root.mirrorSel = [];
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+            Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "mirror-off"]);
             audioRefresh.restart();
         }
     }
@@ -655,20 +618,20 @@ ShellRoot {
     }
     function applyMirror() {
         if (root.mirrorSel.length >= 2) {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror", root.mirrorSel.join(",")]);
+            Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "mirror", root.mirrorSel.join(",")]);
             root.bassOn = false;   // bass e espelho nao convivem
         } else if (root.mirrorSel.length === 1) {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", root.mirrorSel[0]]);
+            Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "output", root.mirrorSel[0]]);
         } else {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+            Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "mirror-off"]);
         }
         audioRefresh.restart();
     }
     function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
-                                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
+                                Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
     // redireciona saida do app para o sink indicado e reavalia
     function setAppOutput(ids, sink) {
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-output", "" + ids, sink]);
+        Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "app-output", "" + ids, sink]);
         audioRefresh.restart();
     }
     // retorna objeto de audioSinks com name igual ao informado, ou null
@@ -685,7 +648,7 @@ ShellRoot {
     function sinkGlyph(icon) {
         return icon === "headphones" ? "󰋋" : (icon === "tv" ? "󰔂" : (icon === "usb" ? "󰕓" : "󰓃"));
     }
-    function toggleAppMute(id) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
+    function toggleAppMute(id) { Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
     // glyph por app (nerd font) pra identificar quem ta tocando no mixer
     function appIcon(name) {
         var n = (name || "").toLowerCase();
@@ -701,8 +664,72 @@ ShellRoot {
         if (n.indexOf("sdl") >= 0 || n.indexOf("game") >= 0) return "󰊗";
         return "󰝚";
     }
+    // ============ resolucao de icone de app (barra + alt-tab) ============
+    // mapa basename->caminho de /usr/share/pixmaps (e ~/.local/share).
+    // o Qt (QIcon::fromTheme) NAO procura em pixmaps, entao icones legados
+    // como o vscode, que so existem la, ficariam quebrados. varremos uma vez.
+    property var pixmapMap: ({})
+    Process {
+        id: pixmapScan
+        running: true
+        command: ["sh", "-c",
+            "find /usr/share/pixmaps \"$HOME/.local/share/pixmaps\" -maxdepth 1 -type f 2>/dev/null"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var m = ({});
+                var lines = this.text.split("\n");
+                for (var i = 0; i < lines.length; i++) {
+                    var p = lines[i].trim();
+                    if (!p) continue;
+                    var slash = p.lastIndexOf("/");
+                    var file = slash >= 0 ? p.substring(slash + 1) : p;
+                    var dot = file.lastIndexOf(".");
+                    var base = dot > 0 ? file.substring(0, dot) : file;
+                    m[base.toLowerCase()] = p;
+                }
+                root.pixmapMap = m;
+            }
+        }
+    }
+    function pixmapIcon(name) {
+        if (!name) return "";
+        return root.pixmapMap[("" + name).toLowerCase()] || "";
+    }
+    // resolve o icone de um appId numa cadeia de fallbacks robusta.
+    // retorna uma source usavel pelo Image, ou "" quando nada resolve
+    // (nesse caso a UI mostra um placeholder de letra em vez de imagem quebrada).
+    function resolveAppIcon(appId) {
+        // dependencias reativas: DesktopEntries carrega ~2s pos-boot e o
+        // pixmapScan termina async; ler os dois faz o binding re-avaliar.
+        var ready = DesktopEntries.applications.values.length;
+        var pm = root.pixmapMap;
+        var id = appId || "";
+        var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
+        var icon = (de && de.icon && de.icon.length) ? de.icon : id;
+        // jogos Steam: janela steam_app_<id> -> icone steam_icon_<id>
+        if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
+        if (!icon) return "";
+        // 1) caminho absoluto declarado no .desktop (ex: discord)
+        if (icon.indexOf("/") === 0) return "file://" + icon;
+        // 2) tema atual (check=true retorna "" se nao existe)
+        var p = Quickshell.iconPath(icon, true);
+        if (p) return p;
+        // 3) variante minuscula
+        p = Quickshell.iconPath(icon.toLowerCase(), true);
+        if (p) return p;
+        // 4) ultimo segmento de appId reverse-DNS (org.gnome.Foo -> foo)
+        var seg = icon.split(".").pop();
+        if (seg && seg !== icon) {
+            p = Quickshell.iconPath(seg.toLowerCase(), true);
+            if (p) return p;
+        }
+        // 5) legado /usr/share/pixmaps (o Qt ignora esse diretorio)
+        var px = root.pixmapIcon(icon) || root.pixmapIcon(seg);
+        if (px) return "file://" + px;
+        return "";
+    }
     function toggleBassNew() { root.bassOn = !root.bassOn;
-                               Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
+                               Quickshell.execDetached(["/home/vings/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
     Timer { id: audioRefresh; interval: 600; repeat: false; onTriggered: root.refreshAudio() }
 
     // ============ GPU (NVIDIA): temperatura + uso, por polling ============
@@ -722,6 +749,33 @@ ShellRoot {
     }
     Timer { interval: 10000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: gpuProc.running = true }
+
+    // ============ bateria do headset (Logitech G733 via headsetcontrol) ============
+    // headsets wireless nao aparecem no UPower/Bluetooth; le a bateria via HID++.
+    QtObject { id: hset; property int pct: 0; property bool charging: false
+               property string name: ""; property bool ok: false }
+    Process {
+        id: hsetProc
+        command: ["headsetcontrol", "-o", "json"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var j = JSON.parse(this.text);
+                    var d = (j.devices && j.devices.length) ? j.devices[0] : null;
+                    var b = d ? d.battery : null;
+                    if (!b || b.status === "BATTERY_UNAVAILABLE" || b.level < 0) {
+                        hset.ok = false; return;
+                    }
+                    hset.pct = b.level;
+                    hset.charging = b.status === "BATTERY_CHARGING";
+                    hset.name = (d.product || "Headset");
+                    hset.ok = true;
+                } catch (e) { hset.ok = false; }
+            }
+        }
+    }
+    Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: hsetProc.running = true }
 
     // ============ notificacoes (historico do mako) ============
     property var notifs: []
@@ -810,7 +864,7 @@ ShellRoot {
         // pro workspace/monitor de origem. activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
-                "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                "/home/vings/.config/quickshell/scripts/taskbar-activate.sh",
                 tl.appId, tl.title || "", "max"]);
         else
             tl.activate();
@@ -1042,6 +1096,16 @@ ShellRoot {
                                     if (wins[i].activated) return true;
                                 return false;
                             }
+                            // badge de notificacao: apps escrevem "(N)" ou "(99+)" no
+                            // titulo quando ha nao lidas (Discord, WhatsApp Web, Telegram,
+                            // Slack, Thunderbird). Detecta presenca, sem mostrar o numero.
+                            property bool hasNotif: {
+                                for (var j = 0; j < wins.length; j++) {
+                                    var t = (wins[j] && wins[j].title) ? wins[j].title : "";
+                                    if (/\(\d+\+?\)/.test(t)) return true;
+                                }
+                                return false;
+                            }
                             implicitWidth: 40
                             implicitHeight: 32
                             radius: 8
@@ -1054,20 +1118,61 @@ ShellRoot {
                             Timer { id: hideTimer; interval: 250; repeat: false }
                             onShowListChanged: showList ? hideTimer.stop() : hideTimer.restart()
 
-                            Image {
+                            // menu de contexto (botao direito): fecha sozinho se o mouse
+                            // nao alcancar o menu a tempo, ou ao sair dele (600ms de folga)
+                            property bool ctxOpen: false
+                            Timer {
+                                id: ctxGrace
+                                interval: 600
+                                running: appBtn.ctxOpen && !ctxHover.hovered
+                                onTriggered: appBtn.ctxOpen = false
+                            }
+
+                            // icone do app; cai num placeholder de letra quando
+                            // o icone nao existe no tema/pixmaps (evita img quebrada)
+                            Item {
                                 anchors.centerIn: parent
                                 width: 22; height: 22
-                                fillMode: Image.PreserveAspectFit
-                                source: {
-                                    // dependencia reativa: DesktopEntries carrega ~2s depois do
-                                    // boot; ao mudar de 0 p/ N apps, este binding re-avalia.
-                                    var ready = DesktopEntries.applications.values.length;
-                                    var id = appBtn.modelData.appId;
-                                    var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
-                                    var icon = (de && de.icon && de.icon.length) ? de.icon : id;
-                                    // jogos Steam: a janela e steam_app_<id>, mas o icone no tema e steam_icon_<id>
-                                    if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
-                                    return Quickshell.iconPath(icon, "application-x-executable");
+                                Image {
+                                    id: appIconImg
+                                    anchors.fill: parent
+                                    fillMode: Image.PreserveAspectFit
+                                    sourceSize.width: 44; sourceSize.height: 44
+                                    source: root.resolveAppIcon(appBtn.modelData.appId)
+                                    visible: status === Image.Ready
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 6
+                                    visible: appIconImg.status !== Image.Ready
+                                    color: Qt.alpha(theme.accent, 0.18)
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: (appBtn.modelData.appId || "?").charAt(0).toUpperCase()
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 13; font.bold: true
+                                        color: theme.fg
+                                    }
+                                }
+                            }
+
+                            // badge: bolinha no canto superior direito quando ha nao lidas
+                            Rectangle {
+                                visible: appBtn.hasNotif
+                                width: 10; height: 10; radius: 5
+                                color: theme.danger
+                                border.width: 2
+                                border.color: theme.bg
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.topMargin: 2
+                                anchors.rightMargin: 2
+                                // pulsa devagar pra chamar atencao sem incomodar
+                                SequentialAnimation on scale {
+                                    running: appBtn.hasNotif
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 1.25; duration: 700; easing.type: Easing.InOutQuad }
+                                    NumberAnimation { to: 1.0;  duration: 700; easing.type: Easing.InOutQuad }
                                 }
                             }
 
@@ -1093,16 +1198,106 @@ ShellRoot {
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                                 onClicked: function (e) {
                                     if (e.button === Qt.MiddleButton) { return; }
+                                    // botao direito: abre/fecha o menu de contexto do app
+                                    if (e.button === Qt.RightButton) { appBtn.ctxOpen = !appBtn.ctxOpen; return; }
                                     // script faz focus-OU-restore via hyprctl: se a janela do
                                     // app estiver minimizada (special:minimized) ela e restaurada
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
                                     // cru, que trazia o overlay especial e travava.
                                     Quickshell.execDetached([
-                                        "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                        "/home/vings/.config/quickshell/scripts/taskbar-activate.sh",
                                         appBtn.modelData.appId]);
+                                }
+                            }
+
+                            // menu de contexto (botao direito no icone do app)
+                            PopupWindow {
+                                id: ctxMenu
+                                anchor.item: appBtn
+                                anchor.edges: Edges.Top
+                                anchor.gravity: Edges.Top
+                                implicitWidth: 200
+                                implicitHeight: ctxCol.implicitHeight + 12
+                                visible: appBtn.ctxOpen
+                                color: "transparent"
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 10
+                                    color: theme.bg
+                                    border.color: Qt.alpha(theme.accent, 0.2)
+                                    border.width: 1
+                                    HoverHandler { id: ctxHover }
+                                    ColumnLayout {
+                                        id: ctxCol
+                                        anchors.fill: parent
+                                        anchors.margins: 6
+                                        spacing: 2
+                                        // cabecalho: nome do app + contagem de janelas
+                                        Text {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 3; Layout.topMargin: 1; Layout.bottomMargin: 2
+                                            color: theme.fgDim; font.pixelSize: 10
+                                            elide: Text.ElideRight
+                                            text: appBtn.modelData.appId + " · " + appBtn.wins.length
+                                                  + (appBtn.wins.length === 1 ? " janela" : " janelas")
+                                        }
+                                        // Finalizar processo (SIGTERM: encerra de forma limpa)
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 30; radius: 6
+                                            color: termHover.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                                            HoverHandler { id: termHover }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 9; anchors.rightMargin: 9
+                                                spacing: 8
+                                                Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                       color: theme.fg; text: "󰅖" }
+                                                Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12
+                                                       text: "Finalizar processo" }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    Quickshell.execDetached([
+                                                        "/home/vings/.config/quickshell/scripts/kill-app.sh",
+                                                        appBtn.modelData.appId, "TERM"]);
+                                                    appBtn.ctxOpen = false;
+                                                }
+                                            }
+                                        }
+                                        // Forcar finalizacao (SIGKILL: pra apps travados)
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 30; radius: 6
+                                            color: killHover.hovered ? Qt.alpha(theme.danger, 0.2) : "transparent"
+                                            HoverHandler { id: killHover }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 9; anchors.rightMargin: 9
+                                                spacing: 8
+                                                Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                       color: killHover.hovered ? theme.danger : theme.fg; text: "󰚌" }
+                                                Text { Layout.fillWidth: true; font.pixelSize: 12
+                                                       color: killHover.hovered ? theme.danger : theme.fg
+                                                       text: "Forçar finalização" }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    Quickshell.execDetached([
+                                                        "/home/vings/.config/quickshell/scripts/kill-app.sh",
+                                                        appBtn.modelData.appId, "KILL"]);
+                                                    appBtn.ctxOpen = false;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -1160,7 +1355,7 @@ ShellRoot {
                                                             onClicked: {
                                                                 if (!win) return;
                                                                 Quickshell.execDetached([
-                                                                    "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                                                    "/home/vings/.config/quickshell/scripts/taskbar-activate.sh",
                                                                     appBtn.modelData.appId, win.title || ""]);
                                                             }
                                                         }
@@ -1267,20 +1462,37 @@ ShellRoot {
                     Repeater {
                         model: SystemTray.items
                         delegate: Item {
+                            id: trayItem
                             required property var modelData
                             implicitWidth: 20; implicitHeight: 20
+                            // nome usado pra casar o processo (id do SNI, senao o title)
+                            property string procName: (modelData.id && modelData.id.length)
+                                                      ? modelData.id : (modelData.title || "")
                             Image {
                                 anchors.centerIn: parent
                                 width: 18; height: 18
                                 fillMode: Image.PreserveAspectFit
                                 source: modelData.icon
                             }
+
+                            // menu de contexto (botao direito): fecha sozinho se o mouse
+                            // nao alcancar o menu a tempo, ou ao sair dele (600ms de folga)
+                            property bool ctxOpen: false
+                            Timer {
+                                id: trayGrace
+                                interval: 600
+                                running: trayItem.ctxOpen && !trayCtxHover.hovered
+                                onTriggered: trayItem.ctxOpen = false
+                            }
+
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                                 onClicked: function (e) {
                                     if (e.button === Qt.MiddleButton) { modelData.secondaryActivate(); return; }
+                                    // botao direito: abre/fecha o menu de finalizar processo
+                                    if (e.button === Qt.RightButton) { trayItem.ctxOpen = !trayItem.ctxOpen; return; }
                                     // Steam: activate() nao restaura a janela quando esta fechado
                                     // pra bandeja. O steam:// abre a janela principal da instancia ativa.
                                     var id = ("" + (modelData.id || "") + (modelData.title || "")).toLowerCase();
@@ -1288,6 +1500,93 @@ ShellRoot {
                                         Quickshell.execDetached(["steam", "steam://open/main"]);
                                     else
                                         modelData.activate();
+                                }
+                            }
+
+                            // menu de contexto do item de bandeja (finalizar processo)
+                            PopupWindow {
+                                id: trayCtxMenu
+                                anchor.item: trayItem
+                                anchor.edges: Edges.Top
+                                anchor.gravity: Edges.Top
+                                implicitWidth: 200
+                                implicitHeight: trayCtxCol.implicitHeight + 12
+                                visible: trayItem.ctxOpen
+                                color: "transparent"
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 10
+                                    color: theme.bg
+                                    border.color: Qt.alpha(theme.accent, 0.2)
+                                    border.width: 1
+                                    HoverHandler { id: trayCtxHover }
+                                    ColumnLayout {
+                                        id: trayCtxCol
+                                        anchors.fill: parent
+                                        anchors.margins: 6
+                                        spacing: 2
+                                        // cabecalho: nome do app na bandeja
+                                        Text {
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 3; Layout.topMargin: 1; Layout.bottomMargin: 2
+                                            color: theme.fgDim; font.pixelSize: 10
+                                            elide: Text.ElideRight
+                                            text: trayItem.modelData.title || trayItem.procName
+                                        }
+                                        // Finalizar processo (SIGTERM)
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 30; radius: 6
+                                            color: trayTermHover.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                                            HoverHandler { id: trayTermHover }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 9; anchors.rightMargin: 9
+                                                spacing: 8
+                                                Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                       color: theme.fg; text: "󰅖" }
+                                                Text { Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12
+                                                       text: "Finalizar processo" }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    Quickshell.execDetached([
+                                                        "/home/vings/.config/quickshell/scripts/kill-app.sh",
+                                                        trayItem.procName, "TERM", "pgrep"]);
+                                                    trayItem.ctxOpen = false;
+                                                }
+                                            }
+                                        }
+                                        // Forcar finalizacao (SIGKILL)
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 30; radius: 6
+                                            color: trayKillHover.hovered ? Qt.alpha(theme.danger, 0.2) : "transparent"
+                                            HoverHandler { id: trayKillHover }
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 9; anchors.rightMargin: 9
+                                                spacing: 8
+                                                Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                       color: trayKillHover.hovered ? theme.danger : theme.fg; text: "󰚌" }
+                                                Text { Layout.fillWidth: true; font.pixelSize: 12
+                                                       color: trayKillHover.hovered ? theme.danger : theme.fg
+                                                       text: "Forçar finalização" }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    Quickshell.execDetached([
+                                                        "/home/vings/.config/quickshell/scripts/kill-app.sh",
+                                                        trayItem.procName, "KILL", "pgrep"]);
+                                                    trayItem.ctxOpen = false;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1397,6 +1696,43 @@ ShellRoot {
                     }
                 }
 
+                // ---- bateria do fone (headset wireless via headsetcontrol) ----
+                // verde = carregando, vermelho <= 15%, clique atualiza na hora
+                Text {
+                    visible: hset.ok
+                    Layout.alignment: Qt.AlignVCenter
+                    color: hset.charging ? theme.ok
+                           : (hset.pct <= 15 ? theme.danger : theme.fg)
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 13
+                    text: "󰋋 " + hset.pct + "%" + (hset.charging ? " 󰚥" : "")
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: hsetProc.running = true   // clique = atualizar agora
+                    }
+                }
+
+                // ---- bateria de perifericos Bluetooth (mouse, teclado, fone BT...) ----
+                Repeater {
+                    model: Bluetooth.devices
+                    delegate: Text {
+                        required property var modelData
+                        visible: modelData.connected && modelData.batteryAvailable
+                        Layout.alignment: Qt.AlignVCenter
+                        property int pct: Math.round((modelData.battery || 0) * 100)
+                        color: pct <= 15 ? theme.danger : theme.fg
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 13
+                        text: "󰂱 " + pct + "%"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { root.acScreen = bar.screen; card.view = "bt"; root.acOpen = true; }
+                        }
+                    }
+                }
+
                 // ---- mic mutado: so aparece quando o microfone esta mudo ----
                 Text {
                     visible: tg.micMuted
@@ -1495,23 +1831,6 @@ ShellRoot {
     // UMA janela fullscreen: backdrop (fecha ao clicar fora) + card por cima.
     // (Duas janelas layer-shell separadas na mesma camada brigavam pelo z-order
     // e o backdrop engolia todos os cliques do card.)
-    // backdrop de dismiss nos OUTROS monitores: o card vive so no acScreen, entao
-    // sem isto um clique em qualquer outro monitor nao fecha a central.
-    Variants {
-        model: Quickshell.screens
-        PanelWindow {
-            property var modelData
-            screen: modelData
-            visible: root.acOpen && root.acScreen && modelData.name !== root.acScreen.name
-            anchors { top: true; bottom: true; left: true; right: true }
-            color: "transparent"
-            exclusionMode: ExclusionMode.Ignore
-            WlrLayershell.layer: WlrLayer.Overlay
-            WlrLayershell.namespace: "qsbar-ac-dismiss"
-            MouseArea { anchors.fill: parent; onClicked: root.acOpen = false }
-        }
-    }
-
     PanelWindow {
         id: ac
         // fica mapeada enquanto a animacao de fechar roda (ate o fade terminar)
@@ -2604,10 +2923,8 @@ ShellRoot {
                         Repeater {
                             model: root.orderedThemes
                             delegate: Rectangle {
-                                id: themeCard
                                 required property var modelData
                                 readonly property bool current: modelData.snake === root.currentTheme
-                                readonly property bool fav: root.isFav(modelData.snake)
                                 Layout.fillWidth: true
                                 implicitHeight: 42; radius: 10
                                 color: current ? Qt.alpha(theme.accent, 0.22)
@@ -2629,12 +2946,6 @@ ShellRoot {
                                             border.width: 1; border.color: Qt.alpha(theme.bg, 0.4)
                                         }
                                     }
-                                    // estrela: tema favoritado
-                                    Text {
-                                        visible: themeCard.fav
-                                        text: "󰓎"; font.family: "JetBrainsMono Nerd Font"
-                                        font.pixelSize: 13; color: theme.accent
-                                    }
                                     Text {
                                         Layout.fillWidth: true
                                         text: modelData.name
@@ -2651,63 +2962,7 @@ ShellRoot {
                                 MouseArea {
                                     id: tHov
                                     anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: function (e) {
-                                        if (e.button === Qt.RightButton) {
-                                            root.themeMenuOpenFor = modelData.snake;   // abre menu de contexto
-                                        } else {
-                                            root.themeMenuOpenFor = "";
-                                            root.setTheme(modelData.snake);            // esquerdo aplica
-                                        }
-                                    }
-                                }
-                                // fecha o menu ao sair do card e do popup (com tolerancia)
-                                property bool menuHovering: tHov.containsMouse || menuAreaHover.hovered
-                                onMenuHoveringChanged: menuHovering ? menuCloseTimer.stop() : menuCloseTimer.restart()
-                                Timer {
-                                    id: menuCloseTimer; interval: 400
-                                    onTriggered: if (root.themeMenuOpenFor === modelData.snake) root.themeMenuOpenFor = ""
-                                }
-                                // menu de contexto (clique direito): Favoritar / Desfavoritar
-                                PopupWindow {
-                                    anchor.item: themeCard
-                                    anchor.edges: Edges.Bottom
-                                    anchor.gravity: Edges.Bottom
-                                    implicitWidth: 160
-                                    implicitHeight: menuCol.implicitHeight + 10
-                                    visible: root.themeMenuOpenFor === modelData.snake
-                                    color: "transparent"
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 10
-                                        color: theme.bg
-                                        border.color: Qt.alpha(theme.accent, 0.25); border.width: 1
-                                        HoverHandler { id: menuAreaHover }
-                                        ColumnLayout {
-                                            id: menuCol
-                                            anchors.fill: parent; anchors.margins: 5; spacing: 2
-                                            Rectangle {
-                                                Layout.fillWidth: true; implicitHeight: 30; radius: 6
-                                                color: favRowHov.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
-                                                HoverHandler { id: favRowHov }
-                                                RowLayout {
-                                                    anchors.fill: parent; anchors.leftMargin: 9; anchors.rightMargin: 9; spacing: 8
-                                                    Text {
-                                                        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
-                                                        color: theme.accent; text: "󰓎"
-                                                    }
-                                                    Text {
-                                                        Layout.fillWidth: true; color: theme.fg; font.pixelSize: 12
-                                                        text: themeCard.fav ? "Desfavoritar" : "Favoritar"
-                                                    }
-                                                }
-                                                MouseArea {
-                                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                                    onClicked: root.toggleFav(modelData.snake)
-                                                }
-                                            }
-                                        }
-                                    }
+                                    onClicked: root.setTheme(modelData.snake)
                                 }
                             }
                         }
@@ -3126,13 +3381,30 @@ ShellRoot {
                             }
                             Text { Layout.preferredWidth: 30; text: Math.round(Math.min(1, appRow.av) * 100) + "%"; color: theme.fgDim
                                    font.pixelSize: 10; horizontalAlignment: Text.AlignRight }
-                            // icone do device de saida atual (so quando esta num device real)
-                            Text {
-                                visible: appRow.curSink !== null
-                                text: appRow.curSink ? root.sinkGlyph(appRow.curSink.icon) : ""
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
-                                color: appRow.routed ? theme.accent : theme.fgDim
-                                Layout.preferredWidth: 18; horizontalAlignment: Text.AlignHCenter
+                            // botao de saida: mostra o device atual do app e abre o menu de
+                            // roteamento (escolher em qual dispositivo esse app vai tocar)
+                            Rectangle {
+                                Layout.preferredWidth: 26; Layout.preferredHeight: 26; radius: 6
+                                // sink a exibir: o real do app, ou o padrao como fallback
+                                property var dispSink: appRow.curSink !== null ? appRow.curSink : root.sinkByName(root.defaultSinkName())
+                                color: outMa.containsMouse ? Qt.alpha(theme.accent, 0.18)
+                                                           : (appRow.routed ? Qt.alpha(theme.accent, 0.12) : "transparent")
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: parent.dispSink ? root.sinkGlyph(parent.dispSink.icon) : "󰓃"
+                                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                                    color: appRow.routed ? theme.accent : (outMa.containsMouse ? theme.fgBright : theme.fgDim)
+                                }
+                                MouseArea {
+                                    id: outMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        var pt = appRow.mapToItem(card, appRow.width - 40, appRow.height / 2);
+                                        audioCol.appMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                        audioCol.appMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                        audioCol.appMenuData = { ids: appRow.modelData.id, name: appRow.modelData.name, outSink: appRow.modelData.outSink };
+                                        audioCol.appMenuFor = appRow.modelData.id;
+                                    }
+                                }
                             }
                         }
                         // botao direito -> menu de escolha de saida (so RightButton: clique esquerdo cai pro slider/icone abaixo)
@@ -3340,17 +3612,23 @@ ShellRoot {
                                         Layout.fillWidth: true
                                         spacing: 6
                                         Item { Layout.fillWidth: true }
-                                        Image {
+                                        Item {
                                             Layout.preferredWidth: 16; Layout.preferredHeight: 16
-                                            fillMode: Image.PreserveAspectFit
-                                            source: {
-                                                var ready = DesktopEntries.applications.values.length;  // re-avalia ao carregar
-                                                var id = thumb.modelData.appId;
-                                                var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
-                                                var icon = (de && de.icon && de.icon.length) ? de.icon : id;
-                                                // jogos Steam: janela steam_app_<id> -> icone steam_icon_<id>
-                                                if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
-                                                return Quickshell.iconPath(icon, "application-x-executable");
+                                            Image {
+                                                id: thumbIconImg
+                                                anchors.fill: parent
+                                                fillMode: Image.PreserveAspectFit
+                                                sourceSize.width: 32; sourceSize.height: 32
+                                                source: root.resolveAppIcon(thumb.modelData.appId)
+                                                visible: status === Image.Ready
+                                            }
+                                            Text {
+                                                anchors.centerIn: parent
+                                                visible: thumbIconImg.status !== Image.Ready
+                                                text: (thumb.modelData.appId || "?").charAt(0).toUpperCase()
+                                                font.family: "JetBrainsMono Nerd Font"
+                                                font.pixelSize: 11; font.bold: true
+                                                color: theme.fg
                                             }
                                         }
                                         Text {
