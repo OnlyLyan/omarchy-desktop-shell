@@ -113,3 +113,48 @@ def test_daemon_desligado_da_mensagem_util(tmp_path):
     resultado = roda(tmp_path / "nao-existe.sock", "list")
     assert resultado.returncode == 1
     assert "phoned" in resultado.stderr.lower()
+
+
+async def test_evento_empurrado_nao_e_confundido_com_resposta(tmp_path):
+    caminho = tmp_path / "ipc.sock"
+
+    async def atende(reader, writer):
+        pedido = json.loads(await reader.readline())
+        # Evento de broadcast com o MESMO tipo da resposta, sem request_id.
+        writer.write(json.dumps({
+            "id": "evt", "type": "pair.result", "ts": 1,
+            "body": {"device_id": "outro-aparelho", "accepted": False,
+                     "reason": "timeout"},
+        }).encode() + b"\n")
+        await writer.drain()
+        writer.write(json.dumps({
+            "id": "resp", "type": "pair.result", "ts": 1,
+            "body": {"ok": True, "request_id": pedido["id"]},
+        }).encode() + b"\n")
+        await writer.drain()
+
+    srv = await asyncio.start_unix_server(atende, path=str(caminho))
+    try:
+        resultado = await asyncio.to_thread(roda, caminho, "pair", "cel-1")
+    finally:
+        srv.close()
+
+    assert resultado.returncode == 0
+    assert "ok" in resultado.stdout
+
+
+async def test_daemon_que_cai_no_meio_nao_da_traceback(tmp_path):
+    caminho = tmp_path / "ipc.sock"
+
+    async def atende(reader, writer):
+        await reader.readline()
+        writer.close()  # fecha sem responder
+
+    srv = await asyncio.start_unix_server(atende, path=str(caminho))
+    try:
+        resultado = await asyncio.to_thread(roda, caminho, "list")
+    finally:
+        srv.close()
+
+    assert resultado.returncode == 1
+    assert "Traceback" not in resultado.stderr
