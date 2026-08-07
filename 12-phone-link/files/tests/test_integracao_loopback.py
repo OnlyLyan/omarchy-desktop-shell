@@ -125,13 +125,19 @@ async def test_terceiro_nao_pareado_nao_consegue_enviar_ping(tmp_path):
 
         # O intruso tenta trafegar sem parear.
         sessao_do_intruso = intruso._transport.sessions()
-        if sessao_do_intruso:
-            await sessao_do_intruso[0].send(protocol.make_packet("phone.ping"))
+        assert sessao_do_intruso, "o intruso deveria ter uma sessao aberta para testar"
+        await sessao_do_intruso[0].send(protocol.make_packet("phone.ping"))
 
+        # Janela curta de proposito, bem abaixo do session_timeout de 1.5s.
+        # O heartbeat tambem derruba sessao nao pareada por inatividade, e a
+        # descoberta reconecta logo depois, entao uma janela larga flagra essa
+        # oscilacao natural e conclui que o gate agiu. Foi medido: com o gate
+        # completamente desligado, uma janela de 4s passava em 1 de 4 execucoes.
+        # So a rejeicao imediata do gate cabe em 0.8s.
         async def derrubou():
             return a._transport.sessions() == [] or intruso._transport.sessions() == []
 
-        assert await espera(derrubou, timeout=4.0), "a sessao nao pareada nao foi cortada"
+        assert await espera(derrubou, timeout=0.8), "a sessao nao pareada nao foi cortada pelo gate"
     finally:
         await a.stop()
         await intruso.stop()
