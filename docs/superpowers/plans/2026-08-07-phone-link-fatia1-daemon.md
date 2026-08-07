@@ -1506,11 +1506,21 @@ class Par:
         return [p for k, p in self.eventos if k == kind]
 
 
-async def monta(tmp_path, nome, porta):
+async def monta(tmp_path, nome, porta, **overrides):
+    """Sobe um Transport isolado.
+
+    Os overrides existem porque mudar cfg depois de start() nao adianta para
+    intervalos: o laco de heartbeat ja entrou no primeiro sleep com o valor
+    antigo. Quem testa temporizacao precisa configurar antes de subir.
+    """
+    parametros = {
+        "name": nome, "tcp_port": porta, "discovery_port": porta,
+        "announce_targets": [], "pair_timeout": 1.0,
+    }
+    parametros.update(overrides)
     cfg = config.load_config(
         state_dir=tmp_path / nome / "state", runtime_dir=tmp_path / nome / "run",
-        name=nome, tcp_port=porta, discovery_port=porta,
-        announce_targets=[], pair_timeout=1.0,
+        **parametros,
     )
     pairing.ensure_certificate(cfg.cert_path, cfg.key_path, cfg.device_id)
     trust = pairing.TrustStore(cfg.devices_path)
@@ -2204,10 +2214,8 @@ async def test_sessao_pendurada_e_derrubada_pelo_heartbeat(tmp_path):
     atividade em vez de fechar a conexao: fechar exercitaria o EOF, nao o
     mecanismo de staleness.
     """
-    a = await monta(tmp_path, "a", 45209)
-    b = await monta(tmp_path, "b", 45210)
-    a.cfg.ping_interval = 0.1
-    a.cfg.session_timeout = 0.3
+    a = await monta(tmp_path, "a", 45209, ping_interval=0.1, session_timeout=0.3)
+    b = await monta(tmp_path, "b", 45210, ping_interval=0.1, session_timeout=0.3)
     try:
         await parear(a, b)
         sessao = a.tr.sessions()[0]
@@ -2237,6 +2245,36 @@ async def test_ensure_connected_nao_abre_segunda_conexao(tmp_path):
         await a.tr.ensure_connected(identidade_b, "127.0.0.1")
         await asyncio.sleep(0.2)
         assert len(a.tr.sessions()) == 1
+    finally:
+        await a.tr.stop()
+        await b.tr.stop()
+
+
+async def test_pareamento_sobrevive_ao_heartbeat(tmp_path):
+    """O heartbeat nao pode matar uma sessao que ainda esta pareando.
+
+    phone.ping nao comeca com pair., entao pingar uma sessao nao pareada faz o
+    gate do outro lado derrubar a conexao. Em producao isso significava que o
+    pareamento nunca fechava: o ping saia a cada 30s e o usuario tinha 60s para
+    confirmar nos dois aparelhos. Com ping bem mais rapido que o prazo de
+    pareamento, o teste reproduz a corrida.
+    """
+    a = await monta(tmp_path, "a", 45211, ping_interval=0.05, pair_timeout=5.0)
+    b = await monta(tmp_path, "b", 45212, ping_interval=0.05, pair_timeout=5.0)
+    try:
+        await a.tr.connect("127.0.0.1", b.cfg.tcp_port)
+        await asyncio.sleep(0.1)
+        await a.tr.request_pair(b.cfg.device_id)
+        # Bem mais que varios ping_interval, para o heartbeat ter chance de agir.
+        await asyncio.sleep(0.6)
+
+        assert a.tr.sessions(), "a sessao caiu antes de o usuario confirmar"
+        assert b.tr.sessions(), "a sessao caiu antes de o usuario confirmar"
+
+        await b.tr.confirm_pair(a.cfg.device_id, True)
+        await a.tr.confirm_pair(b.cfg.device_id, True)
+        await asyncio.sleep(0.2)
+        assert a.trust.get(b.cfg.device_id) is not None
     finally:
         await a.tr.stop()
         await b.tr.stop()
@@ -2359,6 +2397,12 @@ E acrescente ao final da classe:
             await asyncio.sleep(self._cfg.ping_interval)
             agora = asyncio.get_running_loop().time()
             for sessao in list(self._sessions.values()):
+                if not sessao.paired:
+                    # Sessao em pareamento nao leva ping: phone.ping nao comeca
+                    # com pair., entao o gate do outro lado derrubaria a conexao
+                    # antes de o usuario confirmar o codigo. Quem cuida do prazo
+                    # dela e o pair_timeout.
+                    continue
                 visto = self._ultimo_pacote.get(id(sessao), agora)
                 if agora - visto > self._cfg.session_timeout:
                     log.info("sessao com %s sem resposta, encerrando", sessao.device_id)
