@@ -3005,12 +3005,16 @@ def parse_args(argv):
 
 async def _executa(cfg):
     servico = daemon.Daemon(cfg)
-    await servico.start()
-    parada = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sinal in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sinal, parada.set)
+    # O start entra no try: ele sobe IPC, transporte e descoberta nessa ordem,
+    # entao uma porta ocupada estoura depois de o socket do IPC ja existir. Sem
+    # o stop, o arquivo ficaria para tras e faria a proxima subida legitima
+    # falhar por um motivo que nao tem nada a ver com a causa real.
     try:
+        await servico.start()
+        parada = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sinal in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sinal, parada.set)
         await parada.wait()
     finally:
         await servico.stop()
