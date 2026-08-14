@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Mostrar area de trabalho (equivalente ao Ctrl+F12/Meta+D do KDE): esconde de uma vez
+# todas as janelas do workspace ativo, e um segundo toggle traz de volta SO as que este
+# comando escondeu (nunca janelas que o usuario ja tinha minimizado manualmente antes).
+# Reaproveita o mesmo mecanismo do window-minimize (special:min-<addr> + STORE
+# compartilhado), entao taskbar e Alt+Tab continuam enxergando e restaurando essas
+# janelas normalmente mesmo no meio de uma sessao de "mostrar area de trabalho".
+set -uo pipefail
+
+STORE="/tmp/minimized-windows"
+SESSION="/tmp/show-desktop-session"
+PREFIX="special:min"
+
+if [ -s "$SESSION" ]; then
+  mapfile -t addrs < "$SESSION"
+  last=""
+  for addr in "${addrs[@]}"; do
+    [ -n "$addr" ] || continue
+    line="$(grep "^$addr " "$STORE" 2>/dev/null | tail -1)"
+    [ -n "$line" ] || continue   # ja foi restaurada por fora (taskbar/alt+tab)
+    ws="$(awk '{print $2}' <<<"$line")"
+    fs="$(awk '{print $4}' <<<"$line")"
+    case "$ws" in ""|-*|0) ws="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id')" ;; esac
+    grep -v "^$addr " "$STORE" > "$STORE.tmp" 2>/dev/null; mv "$STORE.tmp" "$STORE" 2>/dev/null || true
+    hyprctl dispatch movetoworkspacesilent "${ws},address:$addr" >/dev/null 2>&1
+    if [ -n "${fs:-}" ] && [ "$fs" != "0" ]; then
+      hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+      case "$fs" in
+        1) hyprctl dispatch fullscreen 1 >/dev/null 2>&1 ;;
+        2) hyprctl dispatch fullscreen 0 >/dev/null 2>&1 ;;
+      esac
+    fi
+    last="$addr"
+  done
+  rm -f "$SESSION"
+  [ -n "$last" ] && hyprctl dispatch focuswindow "address:$last" >/dev/null 2>&1
+  exit 0
+fi
+
+wsid="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id')"
+[ -n "$wsid" ] && [ "$wsid" != "null" ] || exit 0
+clients="$(hyprctl clients -j 2>/dev/null)"
+mapfile -t targets < <(printf '%s' "$clients" | jq -r --argjson w "$wsid" \
+  '.[]|select(.workspace.id==$w and (.workspace.name|startswith("special:")|not))|.address')
+[ "${#targets[@]}" -gt 0 ] || exit 0
+
+: > "$SESSION"
+for addr in "${targets[@]}"; do
+  mon="$(printf '%s' "$clients" | jq -r --arg a "$addr" '.[]|select(.address==$a)|.monitor // empty')"
+  fs="$(printf '%s' "$clients" | jq -r --arg a "$addr" '.[]|select(.address==$a)|.fullscreen // 0')"
+  grep -v "^$addr " "$STORE" > "$STORE.tmp" 2>/dev/null; mv "$STORE.tmp" "$STORE" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$addr" "$wsid" "$mon" "$fs" >> "$STORE"
+  echo "$addr" >> "$SESSION"
+  hyprctl dispatch movetoworkspacesilent "${PREFIX}-${addr#0x},address:$addr" >/dev/null 2>&1
+done

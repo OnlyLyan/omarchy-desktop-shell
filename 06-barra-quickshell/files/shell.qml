@@ -4,6 +4,7 @@
 import Quickshell
 import Quickshell.Wayland
 import Quickshell.Wayland._Screencopy
+import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Services.SystemTray
 import Quickshell.Services.UPower
@@ -14,12 +15,87 @@ import QtQuick.Layouts
 import QtQuick.Effects
 
 ShellRoot {
+    // faixa clicavel no topo da janela do kitty (KittyStrip.qml)
+    KittyStrip { theme: theme }
+    // Gaveta de janelas v2 (GavetaPanel.qml). Guardar e so mover pra workspace
+    // especial: a v1 hibernava o processo com SIGSTOP e matou uma sessao viva
+    // do Claude Code dentro do kitty.
+    GavetaPanel { id: gaveta; theme: theme }
+    // notificacao propria, substitui o mako (NotificationPanel.qml)
+    NotificationPanel { id: notifPanel; theme: theme }
+
     id: root
     // estado global: central de acoes (dropdown estilo Windows) aberta?
     property bool acOpen: false
     property var acScreen: null   // monitor onde a central abre (o do chevron clicado)
-    property var wpaMonitors: []  // conectores onde o grafo aparece (vazio = todos)
-    property int wpaFps: 30
+
+    // ===== menu de contexto do icone da taskbar (botao direito) =====
+    property string appMenuFor: ""    // appId com o menu aberto ("" = fechado)
+    property string appMenuLabel: ""  // nome exibido no topo; nao limpa no fechar (sobrevive ao fade)
+    property var appMenuScreen: null  // monitor do clique
+    property real appMenuX: 0         // x do clique em coordenadas da tela
+
+    function openAppMenu(appId: string, label: string, scr: var, x: real): void {
+        root.appMenuFor = appId;
+        root.appMenuLabel = label;
+        root.appMenuScreen = scr;
+        root.appMenuX = x;
+    }
+
+    // janelas de um app (mesmo criterio de agrupamento da taskbar)
+    function appWins(appId: string): var {
+        var out = [];
+        var list = ToplevelManager.toplevels.values;
+        for (var i = 0; i < list.length; i++) {
+            var t = list[i];
+            var id = (t.appId && t.appId.length) ? t.appId : "desconhecido";
+            if (id === appId) out.push(t);
+        }
+        return out;
+    }
+
+    // encerrar: close normal em todas as janelas (o app salva estado / pergunta)
+    function appClose(appId: string): void {
+        var w = root.appWins(appId);
+        for (var i = 0; i < w.length; i++) w[i].close();
+    }
+
+    // forcar: SIGKILL no processo da janela e nos descendentes (app travado)
+    function appKill(appId: string): void {
+        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/taskbar-app.sh",
+                                 "kill", appId]);
+    }
+
+    // reiniciar: fecha tudo, espera as janelas sumirem, reabre pelo .desktop
+    property string restartAppId: ""
+    property var restartEntry: null
+    property int restartTries: 0
+    function appRestart(appId: string): void {
+        var de = DesktopEntries.byId(appId) || DesktopEntries.heuristicLookup(appId);
+        if (!de) return;   // sem .desktop nao ha como reabrir: melhor nao fechar nada
+        root.restartEntry = de;
+        root.restartAppId = appId;
+        root.restartTries = 0;
+        root.appClose(appId);
+        restartTimer.restart();
+    }
+    Timer {
+        id: restartTimer
+        interval: 300; repeat: true
+        onTriggered: {
+            root.restartTries++;
+            if (root.appWins(root.restartAppId).length === 0) {
+                stop();
+                if (root.restartEntry) root.restartEntry.execute();
+                root.restartAppId = ""; root.restartEntry = null;
+            } else if (root.restartTries > 20) {
+                // ~6s e a janela nao fechou (dialogo de "salvar?", app travado):
+                // desiste em vez de abrir uma 2a instancia por cima
+                stop();
+                root.restartAppId = ""; root.restartEntry = null;
+            }
+        }
+    }
 
     // ===== tokens de geometria das ilhas (theme-independente; ajuste ao vivo) =====
     QtObject {
@@ -107,6 +183,24 @@ ShellRoot {
         onLoaded: theme.parse(themeFile.text())
         onFileChanged: { themeFile.reload(); theme.parse(themeFile.text()); }
     }
+    // Cor de carga em GRADIENTE CONTINUO: verde -> ambar -> vermelho, conforme
+    // stress 0..1. Diferente de 3 faixas discretas, aqui cada metrica mostra um
+    // tom proprio mesmo em repouso (CPU 5% verde vivo, RAM 51% ja amarelado),
+    // que e como da pra distinguir as tres de relance sem ler o numero.
+    // Ancoras vem do tema (ok/warn/danger), nunca hex fixo, entao acompanha
+    // troca de tema igual o coracao.
+    function corCarga(stress) {
+        var s = Math.max(0, Math.min(1, stress));
+        // 0..0.5 interpola ok->warn; 0.5..1 interpola warn->danger
+        return s < 0.5 ? _mistura(theme.ok, theme.warn, s / 0.5)
+                       : _mistura(theme.warn, theme.danger, (s - 0.5) / 0.5);
+    }
+    function _mistura(a, b, t) {
+        return Qt.rgba(a.r + (b.r - a.r) * t,
+                       a.g + (b.g - a.g) * t,
+                       a.b + (b.b - a.b) * t, 1);
+    }
+
     // recarga reativa via IPC: `qs ipc call theme reload` (chamado pelo hook theme-set).
     // re-le o colors.toml sem reiniciar o processo, entao a central nao fecha na troca.
     IpcHandler {
@@ -142,7 +236,7 @@ ShellRoot {
         id: monPendingTimer; interval: 1000; repeat: true; running: root.monPending > 0
         onTriggered: { root.monPending--; }  // cosmetico; o revert real e do watchdog
     }
-    Component.onCompleted: monPendingProc.running = true
+    Component.onCompleted: { monPendingProc.running = true; root.refreshNotifs(); }
 
     PanelWindow {
         visible: root.monPending > 0
@@ -289,75 +383,6 @@ ShellRoot {
         wifiDetailsProc.running = true;
     }
 
-    // ---- painel de wallpaper (grafo): busca Pinterest + ciclo do Omarchy ----
-    property var wpaSearchItems: []   // [{id, ext, w, h, in_cycle}]
-    property var wpaCycleItems: []    // [{file}]
-    property bool wpaBusy: false
-    readonly property string wpaApi: "http://127.0.0.1:8799"
-
-    function wpaPost(path, body, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.onreadystatechange = function () {
-            if (xhr.readyState === XMLHttpRequest.DONE) {
-                root.wpaBusy = false;
-                if (xhr.status === 200 && cb) {
-                    try { cb(JSON.parse(xhr.responseText)); } catch (e) {}
-                }
-            }
-        };
-        // try/catch: erro de rede nao deixa o indicador travado em "buscando"
-        try {
-            xhr.open("POST", root.wpaApi + path);
-            xhr.setRequestHeader("Content-Type", "application/json");
-            xhr.send(JSON.stringify(body || {}));
-        } catch (e) { root.wpaBusy = false; }
-    }
-    function wpaGet(path, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.onreadystatechange = function () {
-            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200 && cb) {
-                try { cb(JSON.parse(xhr.responseText)); } catch (e) {}
-            }
-        };
-        xhr.open("GET", root.wpaApi + path); xhr.send();
-    }
-    function wpaSearch(vibe) {
-        root.wpaBusy = true; root.wpaSearchItems = [];
-        root.wpaPost("/api/search", { vibe: vibe, count: 12 }, function (r) {
-            root.wpaSearchItems = r.items || [];
-        });
-    }
-    function wpaAdd(ids) {
-        root.wpaPost("/api/add", { ids: ids }, function () { root.wpaLoadCycle(); });
-    }
-    function wpaLoadCycle() {
-        root.wpaGet("/api/cycle", function (r) { root.wpaCycleItems = r.items || []; });
-    }
-    function wpaRemove(files) {
-        root.wpaPost("/api/remove", { files: files }, function () { root.wpaLoadCycle(); });
-    }
-
-    // ---- backends do grafo de agentes (Claude Agents Wallpaper) ----
-    // O coletor varre ~/.claude/projects e serve graph.json (8787).
-    // O painel faz a busca de wallpaper (8799). Ambos vivem com o qsbar.
-    Process {
-        id: wpaCollector
-        command: ["python3", "/home/lucas/claude-agents-wallpaper/collector/serve.py"]
-        running: true
-    }
-    Process {
-        id: wpaPanelServer
-        command: ["python3", "/home/lucas/claude-agents-wallpaper/panel/panel_server.py"]
-        running: true
-    }
-
-    // grafo de agentes na camada Bottom (substitui o host GTK4+WebKit)
-    AgentGraph {
-        id: agentGraph
-        // config lida de ~/.config/wpa/config.json (Task 6); padrao: todos os monitores, 30fps
-        enabledMonitors: root.wpaMonitors
-        fps: root.wpaFps
-    }
 
     // ---- temas Omarchy: lista (nome+fundo+accent) + tema atual ----
     property var themes: []
@@ -469,6 +494,7 @@ ShellRoot {
         property bool caffeine: false   // inibindo idle (hypridle NAO rodando)
         property bool night: false      // nightlight ligado (temperatura != 6000)
         property bool micMuted: false
+        property bool mouseFocus: true  // hover foca janela/monitor (desliga pra jogar)
     }
     Process {
         id: tgProc
@@ -477,11 +503,13 @@ ShellRoot {
             // estado confiavel via wrapper (a query de temperatura do hyprsunset mente no modo identity)
             "[ \"$($HOME/.local/bin/nightlight-toggle get)\" = on ] && night=1 || night=0; " +
             "wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | grep -q MUTED && mic=1 || mic=0; " +
-            "echo \"$caf $night $mic\""]
+            "[ \"$($HOME/.local/bin/mouse-focus get)\" = on ] && mf=1 || mf=0; " +
+            "echo \"$caf $night $mic $mf\""]
         stdout: StdioCollector {
             onStreamFinished: {
                 var p = this.text.trim().split(" ");
                 tg.caffeine = p[0] === "1"; tg.night = p[1] === "1"; tg.micMuted = p[2] === "1";
+                tg.mouseFocus = p[3] === "1";
             }
         }
     }
@@ -496,6 +524,7 @@ ShellRoot {
     function toggleCaffeine() { tg.caffeine = !tg.caffeine; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-idle"]); tgDelay.restart(); }
     function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["/home/lucas/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
     function toggleMic() { tg.micMuted = !tg.micMuted; Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]); tgDelay.restart(); }
+    function toggleMouseFocus() { tg.mouseFocus = !tg.mouseFocus; Quickshell.execDetached(["/home/lucas/.local/bin/mouse-focus", "toggle"]); tgDelay.restart(); }
 
     // ============ volume do dispositivo de SAIDA REAL ============
     // o easyeffects_sink (default) ignora o proprio volume; controlamos o device
@@ -723,23 +752,11 @@ ShellRoot {
     Timer { interval: 10000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: gpuProc.running = true }
 
-    // ============ notificacoes (historico do mako) ============
+    // ============ notificacoes (historico do NotificationPanel, tema D) ============
+    // substitui `makoctl history -j`: o historico ja mora em memoria no
+    // NotificationPanel, so precisa copiar pra ca quando a view abre.
     property var notifs: []
-    Process {
-        id: notifProc
-        command: ["makoctl", "history", "-j"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    var arr = JSON.parse(this.text);
-                    if (arr && arr.data) arr = arr.data[0] || [];   // tolera formato aninhado
-                    root.notifs = arr || [];
-                } catch (e) { root.notifs = []; }
-            }
-        }
-        Component.onCompleted: running = true
-    }
-    function refreshNotifs() { notifProc.running = true; }
+    function refreshNotifs() { root.notifs = notifPanel.historyList; }
 
     // ============ player de midia (MPRIS) ============
     // escolhe o player tocando; senao o primeiro disponivel
@@ -772,7 +789,13 @@ ShellRoot {
     }
     // monta a lista exibida: MRU primeiro, depois quaisquer janelas ainda nao focadas
     function attBuildList() {
-        var all = ToplevelManager.toplevels.values;
+        // janela guardada na gaveta fica FORA do Alt+Tab: focar uma janela de
+        // workspace especial traz o overlay do special e "trava" a tela com o
+        // desktop apagado atras, a mesma armadilha que o minimizar ja documenta
+        var escondidos = gaveta.escondidos;
+        var all = ToplevelManager.toplevels.values.filter(function (t) {
+            return escondidos.indexOf(t) === -1;
+        });
         var ordered = [];
         for (var i = 0; i < attMru.length; i++)
             if (all.indexOf(attMru[i]) >= 0) ordered.push(attMru[i]);
@@ -807,11 +830,13 @@ ShellRoot {
         attOpen = false;   // fecha e solta o teclado ANTES de focar
         if (!tl) return;
         // usa o mesmo restore da taskbar: foca OU restaura minimizada (special:minimized)
-        // pro workspace/monitor de origem. activate() cru nao lida com minimizada.
+        // pro workspace/monitor de origem, com o fullscreen/maximizado que ela ja tinha.
+        // Igual ao KWin: o Alt+Tab so troca o foco, nunca forca um estado novo na janela.
+        // activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
                 "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
-                tl.appId, tl.title || "", "max"]);
+                tl.appId, tl.title || ""]);
         else
             tl.activate();
     }
@@ -889,8 +914,14 @@ ShellRoot {
                 var map = {};
                 var order = [];
                 var list = ToplevelManager.toplevels.values;
+                // janela guardada na gaveta sai da fileira: o icone da gaveta
+                // vira o caminho de volta ate ela. Comparacao por IDENTIDADE do
+                // toplevel: casar por titulo sumia com a irma de mesmo nome, e
+                // deixava a guardada voltar quando o titulo dela mudava.
+                var guardadas = gaveta.escondidos;
                 for (var i = 0; i < list.length; i++) {
                     var t = list[i];
+                    if (guardadas.indexOf(t) !== -1) continue;
                     var id = (t.appId && t.appId.length) ? t.appId : "desconhecido";
                     if (!map[id]) { map[id] = []; order.push(id); }
                     map[id].push(t);
@@ -1022,7 +1053,9 @@ ShellRoot {
                 anchors.verticalCenter: parent.verticalCenter
                 height: ui.islandHeight
                 width: taskRow.implicitWidth + ui.islandPadH * 2
-                visible: bar.groups.length > 0
+                // com a gaveta cheia a ilha NAO pode sumir: ela leva junto o
+                // unico caminho de volta ate a janela guardada
+                visible: bar.groups.length > 0 || gaveta.count > 0
                 radius: ui.islandRadius
                 color: Qt.alpha(theme.bg, ui.islandOpacity)
                 border.width: 1
@@ -1047,6 +1080,18 @@ ShellRoot {
                             radius: 8
                             color: anyActive ? Qt.alpha(theme.accent, 0.2) : (hov.hovered ? Qt.alpha(theme.accent, 0.13) : "transparent")
 
+                            // badge de notificacao pendente (tema D2). Fica no canto
+                            // de CIMA porque as bolinhas de janela ja ocupam o rodape
+                            // do botao. Apaga quando o app recebe foco.
+                            Rectangle {
+                                anchors { top: parent.top; right: parent.right; margins: 2 }
+                                width: 8; height: 8; radius: 4
+                                color: theme.danger
+                                z: 2
+                                visible: (notifPanel.pendentesPorApp[appBtn.modelData.appId] || 0) > 0
+                            }
+                            onAnyActiveChanged: if (anyActive) notifPanel.limparPendente(modelData.appId)
+
                             HoverHandler { id: hov }
                             // lista de janelas no hover: aberta enquanto hover no icone OU
                             // na lista; 250ms de tolerancia pra atravessar o vao ate o popup
@@ -1063,7 +1108,15 @@ ShellRoot {
                                     // boot; ao mudar de 0 p/ N apps, este binding re-avalia.
                                     var ready = DesktopEntries.applications.values.length;
                                     var id = appBtn.modelData.appId;
+                                    // janela sem appId existe (XWayland cru, janela recem-mapeada) e
+                                    // `undefined.indexOf` estourava TypeError vivo no log
+                                    if (!id || !id.length) return "";
                                     var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
+                                    // Catalogo ainda carregando (~2s apos o boot): nao pede icone com o
+                                    // nome da CLASSE, que quase nunca e nome de icone valido
+                                    // ("brave-browser" contra "brave-desktop"). Volta vazio e re-avalia
+                                    // sozinho quando o catalogo chegar.
+                                    if (!de && ready === 0) return "";
                                     var icon = (de && de.icon && de.icon.length) ? de.icon : id;
                                     // jogos Steam: a janela e steam_app_<id>, mas o icone no tema e steam_icon_<id>
                                     if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);
@@ -1093,9 +1146,24 @@ ShellRoot {
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                                 onClicked: function (e) {
                                     if (e.button === Qt.MiddleButton) { return; }
+                                    if (e.button === Qt.RightButton) {
+                                        // menu de contexto: encerrar / reiniciar / forcar
+                                        var id = appBtn.modelData.appId;
+                                        // janela sem appId existe (XWayland cru, janela recem-mapeada) e
+                                        // `undefined.indexOf` estourava TypeError vivo no log
+                                        if (!id || !id.length) return "";
+                                        var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
+                                        // x do clique em coordenadas da tela: a barra ocupa a
+                                        // largura toda, entao a cena da janela ja e a tela
+                                        root.openAppMenu(id,
+                                                         (de && de.name && de.name.length) ? de.name : id,
+                                                         bar.screen,
+                                                         appBtn.mapToItem(null, e.x, 0).x);
+                                        return;
+                                    }
                                     // script faz focus-OU-restore via hyprctl: se a janela do
                                     // app estiver minimizada (special:minimized) ela e restaurada
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
@@ -1191,6 +1259,212 @@ ShellRoot {
                             }
                         }
                     }
+
+                // separador entre os apps abertos e a gaveta
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 18
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: bar.groups.length > 0
+                    color: Qt.alpha(theme.accent, 0.2)
+                }
+
+                // ---- icone da gaveta ----
+                // NUNCA some, nem com a gaveta vazia: se sumisse, a fileira se
+                // deslocaria a cada guardar/tirar e ele perderia a referencia de
+                // onde clicar. Vazia ele so apaga (fgDim).
+                Rectangle {
+                    id: gavBtn
+                    implicitWidth: 40
+                    implicitHeight: 32
+                    radius: 8
+                    color: gaveta.modo === "tirar" ? Qt.alpha(theme.accent, 0.2)
+                           : (gavHov.hovered ? Qt.alpha(theme.accent, 0.13) : "transparent")
+
+                    HoverHandler { id: gavHov }
+                    property bool showList: gavHov.hovered || gavListHov.hovered
+                    Timer { id: gavHideTimer; interval: 250; repeat: false }
+                    onShowListChanged: showList ? gavHideTimer.stop() : gavHideTimer.restart()
+
+                    // glifo, nao icone de tema: e o que distingue da fileira de
+                    // apps ao lado, que e toda de icone colorido
+                    Text {
+                        anchors.centerIn: parent
+                        text: "\uf187"
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 16
+                        color: gaveta.count > 0 ? theme.fg : theme.fgDim
+                    }
+
+                    // uma bolinha por janela guardada (teto de 4). Nao usa o
+                    // badge vermelho: aquilo ja significa notificacao pendente.
+                    Row {
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 1
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 3
+                        Repeater {
+                            model: Math.min(gaveta.count, 4)
+                            delegate: Rectangle {
+                                width: 4; height: 3; radius: 1.5
+                                color: theme.accent
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: function (e) {
+                            if (e.button === Qt.RightButton) {
+                                if (gaveta.count > 0) gavMenu.visible = !gavMenu.visible;
+                                return;
+                            }
+                            gavMenu.visible = false;
+                            gaveta.abrirTirar();
+                        }
+                    }
+
+                    // lista das guardadas no hover: titulo traz de volta na hora,
+                    // X fecha a janela sem trazer
+                    PopupWindow {
+                        anchor.item: gavBtn
+                        anchor.edges: Edges.Top
+                        anchor.gravity: Edges.Top
+                        implicitWidth: 230
+                        implicitHeight: gavCol.implicitHeight + 12
+                        visible: (gavBtn.showList || gavHideTimer.running) && gaveta.count > 0
+                        color: "transparent"
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 10
+                            color: theme.bg
+                            border.color: Qt.alpha(theme.accent, 0.2)
+                            border.width: 1
+                            HoverHandler { id: gavListHov }
+                            ColumnLayout {
+                                id: gavCol
+                                anchors.fill: parent
+                                anchors.margins: 6
+                                spacing: 2
+                                Repeater {
+                                    model: gaveta.itens
+                                    delegate: Rectangle {
+                                        required property string addr
+                                        required property string appId
+                                        required property string titulo
+                                        Layout.fillWidth: true
+                                        implicitHeight: 28
+                                        radius: 6
+                                        color: gavRowHov.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                                        HoverHandler { id: gavRowHov }
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 9; anchors.rightMargin: 6
+                                            spacing: 4
+                                            Text {
+                                                Layout.fillWidth: true
+                                                color: theme.fg; font.pixelSize: 12
+                                                elide: Text.ElideRight
+                                                text: titulo || appId || addr
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: gaveta.tirar(addr)
+                                                }
+                                            }
+                                            // X com CONFIRMACAO em dois toques. Ele fica a 4px
+                                            // do titulo que restaura, num popup que abre so de
+                                            // passar o mouse, e fecha a janela de verdade: errar
+                                            // o alvo com um kitty rodando sessao viva perde a
+                                            // sessao. O 1o toque arma, o 2o executa, e 3s sem
+                                            // toque desarma sozinho.
+                                            Rectangle {
+                                                id: xBtn
+                                                property bool armado: false
+                                                Layout.preferredWidth: armado ? 62 : 20
+                                                Layout.preferredHeight: 20
+                                                radius: 5
+                                                color: armado ? Qt.alpha(theme.danger, 0.28)
+                                                              : (gavXHov.hovered ? Qt.alpha(theme.danger, 0.2) : "transparent")
+                                                Behavior on Layout.preferredWidth {
+                                                    NumberAnimation { duration: 110; easing.type: Easing.OutCubic }
+                                                }
+                                                Timer {
+                                                    id: xDesarma
+                                                    interval: 3000; repeat: false
+                                                    onTriggered: xBtn.armado = false
+                                                }
+                                                // desarma se o mouse sair da lista inteira
+                                                Connections {
+                                                    target: gavBtn
+                                                    function onShowListChanged() { if (!gavBtn.showList) xBtn.armado = false }
+                                                }
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    font.family: "JetBrainsMono Nerd Font"
+                                                    font.pixelSize: xBtn.armado ? 10 : 12
+                                                    color: (xBtn.armado || gavXHov.hovered) ? theme.danger : theme.fgDim
+                                                    text: xBtn.armado ? "fechar?" : "󰅖"
+                                                }
+                                                HoverHandler { id: gavXHov }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        if (!xBtn.armado) { xBtn.armado = true; xDesarma.restart(); return; }
+                                                        xDesarma.stop();
+                                                        xBtn.armado = false;
+                                                        gaveta.fecharJanela(addr);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // menu do botao direito: acao em lote, nunca fecha janela
+                    PopupWindow {
+                        id: gavMenu
+                        anchor.item: gavBtn
+                        anchor.edges: Edges.Top
+                        anchor.gravity: Edges.Top
+                        implicitWidth: 200
+                        implicitHeight: 40
+                        visible: false
+                        color: "transparent"
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 10
+                            color: theme.bg
+                            border.color: Qt.alpha(theme.accent, 0.2)
+                            border.width: 1
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: 6
+                                radius: 6
+                                color: gavTudoHov.hovered ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                                HoverHandler { id: gavTudoHov }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 9
+                                    text: "Trazer tudo de volta"
+                                    color: theme.fg; font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: { gavMenu.visible = false; gaveta.tirarTudo(); }
+                                }
+                            }
+                        }
+                    }
+                }
                 }
             }
 
@@ -1229,6 +1503,165 @@ ShellRoot {
                     }
                 }
 
+                // ---- system tray: apps em segundo plano ----
+                // Em vez dos icones soltos na barra, um botao unico abre um painel
+                // pequeno com a grade dos apps, igual ao "mostrar icones ocultos"
+                // do Windows. O botao some sozinho quando a bandeja esta vazia.
+                Item {
+                    id: trayBtn
+                    property var trayItems: SystemTray.items ? SystemTray.items.values : []
+                    property bool open: false
+                    property double lastCleared: 0
+                    visible: trayItems.length > 0
+                    onVisibleChanged: if (!visible) open = false
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.preferredWidth: visible ? 22 : 0
+                    Layout.preferredHeight: 22
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 6
+                        color: trayBtn.open ? Qt.alpha(theme.accent, 0.20)
+                               : (trayHover.hovered ? Qt.alpha(theme.accent, 0.12) : "transparent")
+                        HoverHandler { id: trayHover }
+                        Text {
+                            anchors.centerIn: parent
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 13
+                            color: trayBtn.open ? theme.accent : theme.fgDim
+                            // grade, nao chevron: a central de acoes ao lado ja usa
+                            // "󰅃" e dois chevrons colados ficavam ambiguos
+                            text: "󰕰"
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                // o focus grab ja fechou no mesmo clique -> nao reabrir
+                                if (Date.now() - trayBtn.lastCleared < 200) return;
+                                trayBtn.open = !trayBtn.open;
+                            }
+                        }
+                    }
+
+                    // fecha o painel ao clicar em qualquer lugar fora dele
+                    HyprlandFocusGrab {
+                        windows: [trayPopup]
+                        active: trayBtn.open
+                        onCleared: {
+                            trayBtn.open = false;
+                            // marca o instante: o clique no proprio botao tambem conta
+                            // como "fora", e sem isso o onClicked logo em seguida
+                            // reabriria o painel (parecendo que ele nunca fecha)
+                            trayBtn.lastCleared = Date.now();
+                        }
+                    }
+
+                    // painel: abre PRA CIMA porque a barra fica embaixo da tela
+                    PopupWindow {
+                        id: trayPopup
+                        anchor.item: trayBtn
+                        anchor.edges: Edges.Top
+                        anchor.gravity: Edges.Top
+                        visible: trayBtn.open
+                        color: "transparent"
+                        // Tamanho FIXO, calculado so a partir da grade. Nao pode depender
+                        // do hover: se o painel se redimensiona ao mostrar o nome, ele
+                        // cresce pra cima, o icone sai de baixo do cursor, o hover cai,
+                        // o painel encolhe e o cursor volta ao icone -> flicker infinito.
+                        implicitWidth: Math.max(trayGrid.implicitWidth, 120) + 16
+                        implicitHeight: trayGrid.implicitHeight + 18 + 16
+
+                        Rectangle {
+                            id: trayCard
+                            property string hovered: ""
+                            anchors.fill: parent
+                            radius: 10
+                            color: theme.bg
+                            border.width: 1
+                            border.color: Qt.alpha(theme.accent, 0.2)
+
+                            ColumnLayout {
+                                id: trayCol
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                spacing: 0
+
+                                GridLayout {
+                                    id: trayGrid
+                                    Layout.alignment: Qt.AlignHCenter
+                                    columns: Math.min(4, Math.max(1, trayBtn.trayItems.length))
+                                    rowSpacing: 2
+                                    columnSpacing: 2
+
+                                    Repeater {
+                                        model: trayBtn.trayItems
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            implicitWidth: 36; implicitHeight: 36
+                                            radius: 8
+                                            color: itemHover.hovered ? Qt.alpha(theme.accent, 0.18) : "transparent"
+                                            HoverHandler {
+                                                id: itemHover
+                                                onHoveredChanged: trayCard.hovered = hovered
+                                                    ? ("" + (modelData.tooltipTitle || modelData.title || "")) : ""
+                                            }
+                                            Image {
+                                                anchors.centerIn: parent
+                                                width: 20; height: 20
+                                                fillMode: Image.PreserveAspectFit
+                                                source: modelData.icon
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                                                onClicked: function (e) {
+                                                    if (e.button === Qt.RightButton) {
+                                                        // menu de contexto do proprio app (Quit Discord etc.):
+                                                        // vem via DBusMenu, quickshell so precisa de um QsWindow
+                                                        // de ancora e um ponto local a ele pra abrir perto do clique
+                                                        if (modelData.hasMenu)
+                                                            modelData.display(trayPopup, e.x, e.y);
+                                                        return;
+                                                    }
+                                                    if (e.button === Qt.MiddleButton) { modelData.secondaryActivate(); return; }
+                                                    // Steam: activate() nao restaura a janela quando esta fechado
+                                                    // pra bandeja. O steam:// abre a janela principal da instancia ativa.
+                                                    var id = ("" + (modelData.id || "") + (modelData.title || "")).toLowerCase();
+                                                    if (id.indexOf("steam") !== -1)
+                                                        Quickshell.execDetached(["steam", "steam://open/main"]);
+                                                    else
+                                                        modelData.activate();
+                                                    trayBtn.open = false;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // nome do app sob o cursor (o Windows mostra em tooltip).
+                                // fillWidth + preferredWidth 1 impede o texto de ditar a
+                                // largura do painel; altura fixa mantem o espaco reservado
+                                // mesmo sem hover. Some por opacidade, nunca por visible,
+                                // pra nao alterar o tamanho do layout.
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 1
+                                    Layout.preferredHeight: 18
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                    font.pixelSize: 11
+                                    color: theme.fgDim
+                                    opacity: trayCard.hovered.length > 0 ? 1 : 0
+                                    text: trayCard.hovered
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ---- botao recolher/expandir o cluster (tray + metricas) ----
                 Text {
                     id: clusterToggle
@@ -1251,6 +1684,10 @@ ShellRoot {
                     Layout.alignment: Qt.AlignVCenter
                     Layout.preferredHeight: ui.islandHeight
                     Layout.preferredWidth: rightRow.clusterExpanded ? clusterRow.implicitWidth : 0
+                    // sai do layout quando fecha de vez: item de largura zero
+                    // ainda consome o spacing dos dois lados, e sobrava um vao
+                    // grande entre o chevron e o sino com a barra recolhida
+                    visible: Layout.preferredWidth > 0
                     Behavior on Layout.preferredWidth {
                         NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
                     }
@@ -1259,40 +1696,6 @@ ShellRoot {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: ui.moduleSpacing
-
-                // ---- system tray ----
-                RowLayout {
-                    spacing: 8
-                    Layout.alignment: Qt.AlignVCenter
-                    Repeater {
-                        model: SystemTray.items
-                        delegate: Item {
-                            required property var modelData
-                            implicitWidth: 20; implicitHeight: 20
-                            Image {
-                                anchors.centerIn: parent
-                                width: 18; height: 18
-                                fillMode: Image.PreserveAspectFit
-                                source: modelData.icon
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                                onClicked: function (e) {
-                                    if (e.button === Qt.MiddleButton) { modelData.secondaryActivate(); return; }
-                                    // Steam: activate() nao restaura a janela quando esta fechado
-                                    // pra bandeja. O steam:// abre a janela principal da instancia ativa.
-                                    var id = ("" + (modelData.id || "") + (modelData.title || "")).toLowerCase();
-                                    if (id.indexOf("steam") !== -1)
-                                        Quickshell.execDetached(["steam", "steam://open/main"]);
-                                    else
-                                        modelData.activate();
-                                }
-                            }
-                        }
-                    }
-                }
 
                 // ---- update do Omarchy disponivel ----
                 Text {
@@ -1311,10 +1714,11 @@ ShellRoot {
                 // ---- cpu ----
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: theme.fg
+                    property real stress: Math.max(0, Math.min(1, sys.cpu / 100))
+                    color: root.corCarga(stress)
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
-                    text: "󰓅 " + sys.cpu + "%"
+                    text: "CPU " + sys.cpu + "%"
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -1325,10 +1729,11 @@ ShellRoot {
                 // ---- ram ----
                 Text {
                     Layout.alignment: Qt.AlignVCenter
-                    color: theme.fg
+                    property real stress: Math.max(0, Math.min(1, sys.mem / 100))
+                    color: root.corCarga(stress)
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
-                    text: "󰍛 " + sys.mem + "%"
+                    text: "RAM " + sys.mem + "%"
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -1340,10 +1745,13 @@ ShellRoot {
                 Text {
                     visible: gpu.ok
                     Layout.alignment: Qt.AlignVCenter
-                    color: gpu.temp >= 80 ? theme.danger : theme.fg
+                    // temperatura util vai de ~35C (parada) a ~85C (limite),
+                    // entao normaliza nessa faixa em vez de 0..100
+                    property real stress: Math.max(0, Math.min(1, (gpu.temp - 35) / 50))
+                    color: root.corCarga(stress)
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 13
-                    text: "󰢮 " + gpu.temp + "°"
+                    text: "GPU " + gpu.temp + "°"
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -1395,6 +1803,28 @@ ShellRoot {
                         width: 2.5; height: 6; radius: 1
                         color: theme.fg
                     }
+
+                    // A BATERIA E O BOTAO DE ENERGIA. Ideia dele: em vez de uma
+                    // linha "Energia" na central, o proprio modulo abre o menu de
+                    // desligar. Alvo maior que o desenho (o icone tem 30x14, o alvo
+                    // tem 34x24) porque 14px de altura e alvo pequeno demais pra
+                    // mouse. Realce discreto no hover, so pra ele descobrir que e
+                    // clicavel; sem isso o alvo ficaria invisivel.
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 34; height: 24
+                        radius: 6
+                        z: -1
+                        color: battMa.containsMouse ? Qt.alpha(theme.accent, 0.18) : "transparent"
+                    }
+                    MouseArea {
+                        id: battMa
+                        anchors.centerIn: parent
+                        width: 34; height: 24
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Quickshell.execDetached(["sh", "-c", "omarchy-menu power || wlogout"])
+                    }
                 }
 
                 // ---- mic mutado: so aparece quando o microfone esta mudo ----
@@ -1411,28 +1841,53 @@ ShellRoot {
                     }
                 }
 
-                // ---- notificacoes: sino abre a central na view de notificacoes ----
+                    } // fim clusterRow
+                } // fim clusterBox
+
+                // ---- notificacoes: sino SEMPRE visivel ----
+                // Fica FORA do clusterBox de proposito: dentro dele o sino sumia
+                // com a barra recolhida e nao dava pra ver que havia notificacao
+                // nova sem expandir.
                 Item {
                     Layout.alignment: Qt.AlignVCenter
                     implicitWidth: 18; implicitHeight: 18
+                    // glifo reflete o modo: sem isso nao da pra saber que esta
+                    // em silencio ate perder uma notificacao (tema D2)
                     Text {
                         anchors.centerIn: parent
-                        color: theme.fg; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
-                        text: "󰂚"
+                        color: notifPanel.modo === "normal" ? theme.fg : theme.fgDim
+                        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
+                        text: notifPanel.modo === "dnd" ? "󰂛"
+                              : (notifPanel.modo === "discreto" ? "󰂜" : "󰂚")
                     }
+                    // contador de NAO LIDAS, ligado direto na propriedade do painel.
+                    // Antes era root.notifs.length, uma copia congelada que so
+                    // atualizava ao abrir a central: nao acendia em notificacao nova
+                    // e nunca mais apagava depois da primeira.
                     Rectangle {
-                        visible: root.notifs.length > 0
+                        visible: notifPanel.naoLidas > 0
+                        // DENTRO dos limites do item: com margem negativa o badge
+                        // saia da ilha da barra e aparecia cortado
                         anchors.right: parent.right; anchors.top: parent.top
-                        width: 6; height: 6; radius: 3; color: theme.danger
+                        implicitWidth: Math.max(11, cntTxt.implicitWidth + 5); implicitHeight: 11
+                        radius: 6; color: theme.danger
+                        Text {
+                            id: cntTxt
+                            anchors.centerIn: parent
+                            text: notifPanel.naoLidas > 9 ? "9+" : notifPanel.naoLidas
+                            font.pixelSize: 8; font.bold: true
+                            color: theme.bg
+                        }
                     }
                     MouseArea {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.acScreen = bar.screen; card.view = "notif"; root.refreshNotifs(); root.acOpen = true; }
+                        onClicked: {
+                            root.acScreen = bar.screen; card.view = "notif";
+                            root.refreshNotifs(); notifPanel.marcarLidas(); root.acOpen = true;
+                        }
                     }
                 }
 
-                    } // fim clusterRow
-                } // fim clusterBox
 
                 // ---- chevron: abre a central de acoes ----
                 Text {
@@ -1495,6 +1950,105 @@ ShellRoot {
     // UMA janela fullscreen: backdrop (fecha ao clicar fora) + card por cima.
     // (Duas janelas layer-shell separadas na mesma camada brigavam pelo z-order
     // e o backdrop engolia todos os cliques do card.)
+    // ---- menu de contexto do icone da taskbar (botao direito) ----
+    // janela propria em fullscreen: pinta o menu junto do mouse e captura o
+    // clique fora pra fechar (PopupWindow ancorado no icone nao pega clique fora).
+    PanelWindow {
+        visible: root.appMenuFor !== "" || menuBox.opacity > 0.01
+        screen: root.appMenuScreen ? root.appMenuScreen : Quickshell.screens[0]
+        anchors { top: true; bottom: true; left: true; right: true }
+        color: "transparent"
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.namespace: "qsbar-appmenu"
+
+        // clique fora (qualquer botao) fecha
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onClicked: root.appMenuFor = ""
+        }
+
+        Rectangle {
+            id: menuBox
+            width: 200
+            implicitHeight: appMenuCol.implicitHeight + 10
+            height: implicitHeight
+            // segue o mouse na horizontal (preso na tela) e senta em cima da barra
+            x: Math.max(6, Math.min(root.appMenuX - 12, parent.width - width - 6))
+            y: parent.height - ui.islandHeight - ui.barMargin * 2 - height - 6
+            radius: 12
+            color: Qt.alpha(theme.bg, 0.97)
+            border.color: Qt.alpha(theme.accent, 0.25)
+            border.width: 1
+            opacity: root.appMenuFor !== "" ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+
+            // absorve o clique dentro do menu (senao o backdrop fecha antes da acao)
+            MouseArea { anchors.fill: parent }
+
+            ColumnLayout {
+                id: appMenuCol
+                anchors.fill: parent; anchors.margins: 5; spacing: 2
+
+                Text {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 9; Layout.rightMargin: 9
+                    Layout.topMargin: 3; Layout.bottomMargin: 2
+                    color: theme.fgDim; font.pixelSize: 11
+                    elide: Text.ElideRight
+                    text: root.appMenuLabel
+                }
+
+                Repeater {
+                    model: [
+                        { icon: "󰅖", label: "Encerrar",            act: "close",   danger: false },
+                        { icon: "󰑐", label: "Reiniciar",           act: "restart", danger: false },
+                        { icon: "󰚌", label: "Forçar encerramento", act: "kill",    danger: true  }
+                    ]
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 30
+                        radius: 6
+                        color: itemHov.hovered
+                               ? Qt.alpha(modelData.danger ? theme.danger : theme.accent, 0.2)
+                               : "transparent"
+                        HoverHandler { id: itemHov }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 9; anchors.rightMargin: 9
+                            spacing: 8
+                            Text {
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                color: modelData.danger ? theme.danger : theme.accent
+                                text: modelData.icon
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                color: modelData.danger ? theme.danger : theme.fg
+                                font.pixelSize: 12
+                                text: modelData.label
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var id = root.appMenuFor;
+                                if (id === "") return;
+                                if (modelData.act === "close") root.appClose(id);
+                                else if (modelData.act === "restart") root.appRestart(id);
+                                else root.appKill(id);
+                                root.appMenuFor = "";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // backdrop de dismiss nos OUTROS monitores: o card vive so no acScreen, entao
     // sem isto um clique em qualquer outro monitor nao fecha a central.
     Variants {
@@ -1534,10 +2088,9 @@ ShellRoot {
 
         Rectangle {
             id: card
-            property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "perso" | "wall" | "audio"
+            property string view: "main"   // "main" | "wifi" | "bt" | "notif" | "perso" | "audio"
             onViewChanged: { if (view === "wifi") root.refreshWifi();
                              else if (view === "notif") root.refreshNotifs();
-                             else if (view === "wall") root.wpaLoadCycle();
                              else if (view === "audio") root.refreshAudio();
                              else if (view === "monitors") { monitorsCol.reload(); monitorsCol.loadProfiles(); }
                              else if (view === "bt" && Bluetooth.defaultAdapter && Bluetooth.defaultAdapter.enabled)
@@ -1552,17 +2105,24 @@ ShellRoot {
             implicitHeight: (view === "wifi" ? wifiCol.implicitHeight
                              : (view === "bt" ? btCol.implicitHeight
                              : (view === "notif" ? notifCol.implicitHeight
-                             : (view === "wall" ? wallCol.implicitHeight
                              : (view === "audio" ? audioCol.implicitHeight
                              : (view === "perso" ? persoCol.implicitHeight
-                             : (view === "monitors" ? monitorsCol.implicitHeight : acCol.implicitHeight))))))) + 28
-            height: implicitHeight
+                             : (view === "monitors" ? monitorsCol.implicitHeight : acCol.implicitHeight)))))) + 28
+            // teto pela altura logica da propria janela layershell, nao pela
+            // fisica do monitor: assim vale em qualquer monitor e escala. Sem
+            // isso a lista de notificacoes empurrava o cabecalho pra fora da tela.
+            height: Math.min(implicitHeight,
+                             parent.height - (ui.islandHeight + ui.barMargin * 2 + 6) - 40)
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.rightMargin: 8
             anchors.bottomMargin: ui.islandHeight + ui.barMargin * 2 + 6
             radius: 16
-            color: Qt.alpha(theme.bg, 0.75)
+            // fundo praticamente solido: com 0.75 o texto da janela atras
+            // vazava atraves do card inteiro e virava ruido visual sobre o
+            // conteudo do painel. 0.97 e o mesmo valor ja usado no card do
+            // Alt+Tab (linha 1665), entao fica coerente com o resto da shell.
+            color: Qt.alpha(theme.bg, 0.97)
             border.color: Qt.alpha(theme.accent, 0.2)
             border.width: 1
 
@@ -1696,7 +2256,7 @@ ShellRoot {
                     color: theme.fgDim; font.pixelSize: 11; font.bold: true
                 }
 
-                // toggles rapidos: caffeine, nightlight, mic
+                // toggles rapidos: caffeine, nightlight, mic, foco por mouse
                 // (Bass saiu daqui em 2026-06-24: da pra ver/ativar na aba "Som")
                 RowLayout {
                     Layout.fillWidth: true
@@ -1705,13 +2265,15 @@ ShellRoot {
                         model: [
                             { key: "caf",   icon: "󰅶", label: "Cafeína" },
                             { key: "night", icon: "󰖔", label: "Noturno" },
-                            { key: "mic",   icon: "󰍬", label: "Mic" }
+                            { key: "mic",   icon: "󰍬", label: "Mic" },
+                            { key: "focus", icon: "󰍽", label: "Foco" }
                         ]
                         delegate: Rectangle {
                             required property var modelData
                             property bool on: modelData.key === "caf" ? tg.caffeine
                                             : (modelData.key === "night" ? tg.night
-                                            : !tg.micMuted)
+                                            : (modelData.key === "mic" ? !tg.micMuted
+                                            : tg.mouseFocus))
                             Layout.fillWidth: true
                             implicitHeight: 52; radius: 12
                             color: on ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
@@ -1735,7 +2297,8 @@ ShellRoot {
                                 onClicked: {
                                     if (modelData.key === "caf") root.toggleCaffeine();
                                     else if (modelData.key === "night") root.toggleNight();
-                                    else root.toggleMic();
+                                    else if (modelData.key === "mic") root.toggleMic();
+                                    else root.toggleMouseFocus();
                                 }
                             }
                         }
@@ -1748,14 +2311,21 @@ ShellRoot {
                     spacing: 10
                     // rede (info)
                     Rectangle {
+                        id: netPill
                         Layout.fillWidth: true
                         implicitHeight: 52; radius: 12
-                        color: Qt.alpha(theme.accent, 0.13)
+                        // conectado E estado real (cabo ou wifi com rede), entao recebe o
+                        // mesmo destaque do Bluetooth ligado. Sem rede fica neutra.
+                        // (antes ficava sempre neutra e parecia desligada mesmo conectada)
+                        property bool conectado: sys.net === "eth" || sys.net.indexOf("wifi") === 0
+                        color: conectado ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
+                        border.color: conectado ? theme.accent : "transparent"; border.width: 1
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 1
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
+                                color: netPill.conectado ? theme.accent : theme.fgDim
                                 text: sys.net === "eth" ? "󰈀" : (sys.net.indexOf("wifi") === 0 ? "󰤨" : "󰤭")
                             }
                             Text {
@@ -1808,85 +2378,66 @@ ShellRoot {
 
                 // (bateria e clima removidos da central em 2026-06-24: ja aparecem na taskbar)
 
-                // personalizacao: card proprio (tema + papel de parede)
+                // separador entre o bloco grade (toggles/pills) e o bloco lista abaixo
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: 46; radius: 12
-                    color: persoMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰉼" }
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: 0
-                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Personalização" }
-                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Tema e papel de parede" }
-                        }
-                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
-                    }
-                    MouseArea {
-                        id: persoMa
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { root.refreshThemes(); card.view = "perso" }
-                    }
+                    Layout.topMargin: 4; Layout.bottomMargin: 4
+                    height: 1
+                    color: theme.surface
                 }
 
-                // monitores: card proprio (resolucao, escala, perfis)
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 46; radius: 12
-                    color: monMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰍹" }
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: 0
-                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Monitores" }
-                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Resolução, escala e perfis" }
-                        }
-                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
-                    }
-                    MouseArea {
-                        id: monMa
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: card.view = "monitors"
-                    }
-                }
-
-                // acoes
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-                    Repeater {
-                        model: [
-                            { icon: "󰍜", label: "Menu", cmd: ["omarchy-menu"] },
-                            { icon: "󰐥", label: "Energia", cmd: ["sh", "-c", "omarchy-menu power || wlogout"] }
-                        ]
-                        delegate: Rectangle {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            implicitHeight: 46; radius: 12
-                            color: actMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
-                            ColumnLayout {
-                                anchors.centerIn: parent; spacing: 2
-                                Text {
-                                    Layout.alignment: Qt.AlignHCenter
-                                    font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 16; color: theme.fg
-                                    text: modelData.icon
-                                }
-                                Text {
-                                    Layout.alignment: Qt.AlignHCenter
-                                    color: theme.fg; font.pixelSize: 10
-                                    text: modelData.label
-                                }
+                // bloco lista: personalizacao, monitores, energia. Sem "Menu" (o
+                // Lucas ja tem SUPER pra isso, botao era redundante) e sem
+                // subtitulo (ficava inconsistente com as linhas sem subtitulo, e
+                // o texto de duas linhas desalinhava o icone/chevron das linhas de
+                // uma linha so). Todos uniformes: icone + label + chevron,
+                // centralizados de verdade (Layout.alignment explicito, referencia
+                // Windows 11). Coluna propria com spacing apertado (4px), pra nao
+                // herdar o spacing 14 do acCol, que e o respiro ENTRE secoes, nao
+                // entre linha e linha dentro da mesma lista.
+                ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Repeater {
+                    model: [
+                        { icon: "󰉼", label: "Personalização", view: "perso", cmd: null },
+                        { icon: "󰍹", label: "Monitores", view: "monitors", cmd: null }
+                        // "Energia" saiu daqui em 2026-08-14: virou clique no proprio
+                        // modulo de bateria da barra, ideia dele. Linha de menu que so
+                        // dispara um comando externo nao pertence a uma lista de
+                        // paineis, e o alvo agora fica onde o assunto ja esta.
+                    ]
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 46; radius: 12
+                        color: listMa.containsMouse ? theme.surface2 : theme.bgAlt
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
+                            Text {
+                                Layout.alignment: Qt.AlignVCenter
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: modelData.icon
                             }
-                            MouseArea {
-                                id: actMa
-                                anchors.fill: parent; hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: { Quickshell.execDetached(modelData.cmd); root.acOpen = false; }
+                            Text {
+                                Layout.fillWidth: true; Layout.alignment: Qt.AlignVCenter
+                                color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: modelData.label
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignVCenter
+                                text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim
+                            }
+                        }
+                        MouseArea {
+                            id: listMa
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (modelData.cmd) { Quickshell.execDetached(modelData.cmd); root.acOpen = false; return; }
+                                if (modelData.view === "perso") root.refreshThemes();
+                                card.view = modelData.view;
                             }
                         }
                     }
+                }
                 }
             }
 
@@ -1947,8 +2498,9 @@ ShellRoot {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: rowCol.implicitHeight + 8; radius: 8
-                        color: netRowMa.containsMouse ? Qt.alpha(theme.accent, 0.2)
-                               : (modelData.conn ? Qt.alpha(theme.accent, 0.13) : "transparent")
+                        // hover e realce neutro; accent fica so pra conexao real (tema A)
+                        color: modelData.conn ? Qt.alpha(theme.accent, 0.13)
+                               : (netRowMa.containsMouse ? theme.surface2 : "transparent")
 
                         ColumnLayout {
                             id: rowCol
@@ -2101,7 +2653,9 @@ ShellRoot {
                     }
                     // Desconectar (conectada)
                     Rectangle {
-                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.conn
+                        // === true: com o menu fechado wifiMenuData e {}, e undefined nao pode
+                        // ser atribuido a bool (gerava warning no log do quickshell)
+                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.conn === true
                         Layout.fillWidth: true; implicitHeight: 30; radius: 6
                         color: dMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
@@ -2111,7 +2665,7 @@ ShellRoot {
                     }
                     // Esquecer (conhecida)
                     Rectangle {
-                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.known
+                        visible: !wifiCol.wifiShowDetails && wifiCol.wifiMenuData.known === true
                         Layout.fillWidth: true; implicitHeight: 30; radius: 6
                         color: fMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
@@ -2472,6 +3026,40 @@ ShellRoot {
                     }
                     Text { text: "Notificações"; color: theme.fg; font.pixelSize: 14; font.bold: true }
                     Item { Layout.fillWidth: true }
+
+                    // ---- modo de notificacao, clicavel (o Lucas nao usa atalho) ----
+                    // um chip por modo, o ativo destacado. Substitui depender do
+                    // SUPER CTRL virgula, que continua funcionando em paralelo.
+                    Repeater {
+                        model: [
+                            { m: "normal",   ic: "󰂚", dica: "Normal: pílula + som" },
+                            { m: "discreto", ic: "󰂜", dica: "Discreto: só ícone no app + som" },
+                            { m: "dnd",      ic: "󰂛", dica: "Não perturbe: só histórico" }
+                        ]
+                        delegate: Rectangle {
+                            required property var modelData
+                            property bool ativo: notifPanel.modo === modelData.m
+                            implicitWidth: 26; implicitHeight: 22; radius: 6
+                            color: ativo ? Qt.alpha(theme.accent, 0.2)
+                                         : (modoMa.containsMouse ? theme.surface2 : "transparent")
+                            border.color: ativo ? theme.accent : "transparent"; border.width: 1
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.ic
+                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                color: parent.ativo ? theme.accent : theme.fgDim
+                            }
+                            MouseArea {
+                                id: modoMa
+                                anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: notifPanel.setModo(modelData.m)
+                            }
+                        }
+                    }
+                    // separador entre os modos e as acoes da lista
+                    Rectangle { implicitWidth: 1; implicitHeight: 16; color: theme.surface }
+
                     // ler a notificacao mais recente (a do topo) em voz, via TTS
                     Text {
                         text: "󰔊"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
@@ -2484,17 +3072,14 @@ ShellRoot {
                                         Quickshell.execDetached(["sh", "-c", "exec \"$HOME/.local/bin/tts-read\" \"$1\"", "_", txt]);
                                     } }
                     }
-                    // limpar de verdade: dispensa as ativas e DRENA o historico do mako
-                    // (restore traz de volta, dismiss --no-history remove sem regravar)
+                    // limpar de verdade: dispensa as pilulas ativas e zera o
+                    // historico (tema D, NotificationPanel.qml, sem mako)
                     Text {
                         text: "󰎟"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
                         color: root.notifs.length > 0 ? theme.fg : theme.surface2
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        Quickshell.execDetached(["sh", "-c",
-                                            "makoctl dismiss --all 2>/dev/null; i=0; " +
-                                            "while [ $i -lt 40 ] && makoctl restore 2>/dev/null; do " +
-                                            "makoctl dismiss --no-history 2>/dev/null; i=$((i+1)); done"]);
+                                        notifPanel.limparTudo();
                                         root.notifs = [];
                                     } }
                     }
@@ -2505,33 +3090,83 @@ ShellRoot {
                     }
                 }
 
-                Repeater {
-                    model: root.notifs
-                    delegate: Rectangle {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        implicitHeight: ntCol.implicitHeight + 12
-                        radius: 8; color: theme.bgAlt
-                        ColumnLayout {
-                            id: ntCol
-                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
-                            anchors.leftMargin: 10; anchors.rightMargin: 10
-                            spacing: 1
-                            Text {
-                                Layout.fillWidth: true; color: theme.accent; font.pixelSize: 10
-                                elide: Text.ElideRight
-                                text: (modelData["app_name"] || "")
-                            }
-                            Text {
-                                Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
-                                elide: Text.ElideRight
-                                text: (modelData["summary"] || "")
-                            }
-                            Text {
-                                Layout.fillWidth: true; visible: !!(modelData["body"])
-                                color: theme.fg; font.pixelSize: 11
-                                wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
-                                text: (modelData["body"] || "")
+                // lista rolavel: antes o card crescia pra cima sem limite e com
+                // ~12 itens o cabecalho e o botao de limpar saiam pela borda de
+                // cima da tela. O cabecalho fica FORA do Flickable, sempre visivel.
+                Flickable {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredHeight: Math.min(histCol.implicitHeight, 420)
+                    contentHeight: histCol.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    ColumnLayout {
+                        id: histCol
+                        width: parent.width
+                        spacing: 8
+                        Repeater {
+                            model: root.notifs
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                Layout.fillWidth: true
+                                implicitHeight: ntCol.implicitHeight + 12
+                                radius: 8
+                                color: ntMa.containsMouse ? theme.surface2 : theme.bgAlt
+                                ColumnLayout {
+                                    id: ntCol
+                                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                    anchors.leftMargin: 10; anchors.rightMargin: 34
+                                    spacing: 1
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            Layout.fillWidth: true; color: theme.accent; font.pixelSize: 10
+                                            elide: Text.ElideRight
+                                            text: (modelData["appName"] || "")
+                                        }
+                                        Text {
+                                            color: theme.fgDim; font.pixelSize: 10
+                                            text: modelData["ts"] ? notifPanel._hora(modelData["ts"]) : ""
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; color: theme.fgBright; font.pixelSize: 12
+                                        elide: Text.ElideRight
+                                        text: (modelData["summary"] || "")
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true; visible: !!(modelData["body"])
+                                        color: theme.fg; font.pixelSize: 11
+                                        wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+                                        text: (modelData["body"] || "")
+                                    }
+                                }
+                                // clique no corpo vai pra origem (so pelo appId: a acao
+                                // "default" do protocolo nao sobrevive ao fechamento)
+                                MouseArea {
+                                    id: ntMa
+                                    anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: { notifPanel.ativarHistorico(index); root.acOpen = false; }
+                                }
+                                // remove SO este item
+                                Rectangle {
+                                    anchors { right: parent.right; top: parent.top; margins: 4 }
+                                    width: 24; height: 24; radius: 12
+                                    color: rmMa.containsMouse ? theme.surface : "transparent"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "󰅖"; font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 11; color: theme.fgDim
+                                    }
+                                    MouseArea {
+                                        id: rmMa
+                                        anchors.fill: parent; hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: { notifPanel.removerHistorico(index); root.refreshNotifs(); }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2714,184 +3349,8 @@ ShellRoot {
                     }
                 }
 
-                // papel de parede: leva pro previewer existente
-                Rectangle {
-                    Layout.fillWidth: true; Layout.topMargin: 4
-                    implicitHeight: 44; radius: 10
-                    color: persoWallMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : theme.bgAlt
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                        Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.accent; text: "󰸉" }
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: 0
-                            Text { color: theme.fgBright; font.pixelSize: 12; font.bold: true; text: "Papel de parede" }
-                            Text { color: theme.fgDim; font.pixelSize: 10; text: "Trocar ou baixar" }
-                        }
-                        Text { text: "󰅂"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14; color: theme.fgDim }
-                    }
-                    MouseArea {
-                        id: persoWallMa
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: { card.view = "wall" }
-                    }
-                }
             }
 
-            // ---- view: papel de parede (grafo de agentes + Pinterest) ----
-            ColumnLayout {
-                id: wallCol
-                visible: card.view === "wall"
-                anchors { left: parent.left; right: parent.right; top: parent.top }
-                anchors.margins: 14
-                spacing: 8
-
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 8
-                    Text {
-                        text: "󰉍"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18; color: theme.fg
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: card.view = "main" }
-                    }
-                    Text { Layout.fillWidth: true; text: "Papel de parede"; color: theme.fg; font.pixelSize: 14; font.bold: true }
-                }
-
-                // busca por vibe
-                RowLayout {
-                    Layout.fillWidth: true; spacing: 6
-                    Rectangle {
-                        Layout.fillWidth: true; implicitHeight: 32; radius: 8; color: theme.bgAlt
-                        border.width: 1; border.color: theme.border
-                        TextInput {
-                            id: vibeInput
-                            anchors { fill: parent; leftMargin: 10; rightMargin: 10 }
-                            verticalAlignment: TextInput.AlignVCenter
-                            color: theme.fgBright; font.pixelSize: 12; clip: true
-                            onAccepted: if (text.trim()) root.wpaSearch(text.trim())
-                            Text {
-                                anchors.fill: parent; verticalAlignment: Text.AlignVCenter
-                                visible: !vibeInput.text && !vibeInput.activeFocus
-                                color: theme.fgDim; font.pixelSize: 12
-                                text: "Descreva uma vibe (ex: montanha neblina)"
-                            }
-                        }
-                    }
-                    Rectangle {
-                        implicitWidth: 70; implicitHeight: 32; radius: 8
-                        color: root.wpaBusy ? theme.surface : Qt.alpha(theme.accent, 0.25)
-                        Text {
-                            anchors.centerIn: parent; font.pixelSize: 12; color: theme.fgBright
-                            text: root.wpaBusy ? "..." : "Buscar"
-                        }
-                        MouseArea {
-                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            enabled: !root.wpaBusy
-                            onClicked: if (vibeInput.text.trim()) root.wpaSearch(vibeInput.text.trim())
-                        }
-                    }
-                }
-
-                // feedback enquanto busca (gallery-dl baixa do Pinterest, ~30-40s)
-                Text {
-                    visible: root.wpaBusy
-                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                    color: theme.accent; font.pixelSize: 11
-                    text: "Buscando wallpapers no Pinterest, pode levar ate ~40s..."
-                }
-
-                // grid de resultados da busca (clicar adiciona ao ciclo)
-                Text {
-                    visible: root.wpaSearchItems.length > 0
-                    Layout.fillWidth: true; color: theme.fgDim; font.pixelSize: 10
-                    text: "Clique pra adicionar ao ciclo do tema."
-                }
-                Flickable {
-                    visible: root.wpaSearchItems.length > 0
-                    Layout.fillWidth: true
-                    implicitHeight: Math.min(searchGrid.implicitHeight, 200)
-                    contentWidth: width; contentHeight: searchGrid.implicitHeight
-                    clip: true; boundsBehavior: Flickable.StopAtBounds
-                    Grid {
-                        id: searchGrid
-                        width: parent.width; columns: 3; spacing: 8
-                        property real cellW: (width - 2*spacing) / 3
-                        Repeater {
-                            model: root.wpaSearchItems
-                            delegate: Rectangle {
-                                required property var modelData
-                                width: searchGrid.cellW; height: width * 0.62
-                                radius: 8; clip: true; color: theme.bgDark
-                                border.width: sMa.containsMouse ? 2 : 0; border.color: theme.accent
-                                Image {
-                                    anchors.fill: parent
-                                    source: root.wpaApi + "/api/thumb/" + modelData.id
-                                    fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: true
-                                }
-                                Text {
-                                    visible: modelData.in_cycle
-                                    anchors { right: parent.right; top: parent.top; margins: 3 }
-                                    text: "󰈌"; font.family: "JetBrainsMono Nerd Font"
-                                    font.pixelSize: 12; color: theme.ok; style: Text.Outline; styleColor: theme.bgDark
-                                }
-                                MouseArea {
-                                    id: sMa; anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.wpaAdd([modelData.id])
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
-
-                // ciclo atual (remover com clique)
-                Text {
-                    Layout.fillWidth: true; color: theme.fgDim; font.pixelSize: 11; font.bold: true
-                    text: "No ciclo do tema (" + root.wpaCycleItems.length + ")"
-                }
-                Text {
-                    visible: root.wpaCycleItems.length === 0
-                    Layout.fillWidth: true; wrapMode: Text.WordWrap
-                    color: theme.fgDim; font.pixelSize: 11
-                    text: "Vazio. Busque acima e clique numa imagem pra adicionar."
-                }
-                Flickable {
-                    visible: root.wpaCycleItems.length > 0
-                    Layout.fillWidth: true
-                    implicitHeight: Math.min(cycleGrid.implicitHeight, 180)
-                    contentWidth: width; contentHeight: cycleGrid.implicitHeight
-                    clip: true; boundsBehavior: Flickable.StopAtBounds
-                    Grid {
-                        id: cycleGrid
-                        width: parent.width; columns: 3; spacing: 8
-                        property real cellW: (width - 2*spacing) / 3
-                        Repeater {
-                            model: root.wpaCycleItems
-                            delegate: Rectangle {
-                                required property var modelData
-                                width: cycleGrid.cellW; height: width * 0.62
-                                radius: 8; clip: true; color: theme.bgDark
-                                border.width: cMa.containsMouse ? 2 : 0; border.color: theme.danger
-                                Image {
-                                    anchors.fill: parent
-                                    source: root.wpaApi + "/api/cyclethumb?f=" + encodeURIComponent(modelData.file)
-                                    fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: true
-                                }
-                                Text {
-                                    visible: cMa.containsMouse
-                                    anchors.centerIn: parent
-                                    text: "󰖚"; font.family: "JetBrainsMono Nerd Font"
-                                    font.pixelSize: 18; color: theme.danger; style: Text.Outline; styleColor: theme.bgDark
-                                }
-                                MouseArea {
-                                    id: cMa; anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.wpaRemove([modelData.file])
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             // ---- menu de contexto de saida por app (botao direito) ----
             MouseArea {
@@ -2931,7 +3390,7 @@ ShellRoot {
                             required property var modelData
                             property bool isCur: modelData.name === audioCol.appMenuData.outSink
                             Layout.fillWidth: true; implicitHeight: 30; radius: 6
-                            color: devMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                            color: devMa.containsMouse ? theme.surface2 : "transparent"
                             RowLayout {
                                 anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 8
                                 Text { text: root.sinkGlyph(modelData.icon); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 14
@@ -2951,7 +3410,7 @@ ShellRoot {
                     Rectangle {
                         visible: audioCol.appMenuData.outSink !== root.defaultSinkName() && root.defaultSinkName() !== ""
                         Layout.fillWidth: true; implicitHeight: 30; radius: 6
-                        color: defMa.containsMouse ? Qt.alpha(theme.accent, 0.2) : "transparent"
+                        color: defMa.containsMouse ? theme.surface2 : "transparent"
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 8
                                text: "Voltar ao padrao"; color: theme.warn; font.pixelSize: 12 }
                         MouseArea { id: defMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
@@ -3018,7 +3477,7 @@ ShellRoot {
                 // saida: escolher o dispositivo (igual Windows) | espelhar = tocar em varios
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Text { Layout.fillWidth: true; text: "Saída"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+                    Text { Layout.fillWidth: true; text: "Saída"; color: theme.fgBright; font.pixelSize: 13; font.bold: true }
                     Text { text: "Espelhar"; font.pixelSize: 10; font.bold: root.mirrorMode
                            color: root.mirrorMode ? theme.accent : theme.fgDim }
                     // mini switch on/off
@@ -3046,7 +3505,7 @@ ShellRoot {
                         property bool checked: root.mirrorMode ? root.mirrorHas(modelData.name) : modelData.active
                         Layout.fillWidth: true
                         implicitHeight: 34; radius: 8
-                        color: checked ? Qt.alpha(theme.accent, 0.2) : (sinkMa.containsMouse ? Qt.alpha(theme.accent, 0.12) : "transparent")
+                        color: checked ? Qt.alpha(theme.accent, 0.2) : (sinkMa.containsMouse ? theme.surface2 : "transparent")
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                             // no modo espelho mostra checkbox; senao o icone do dispositivo
@@ -3153,7 +3612,7 @@ ShellRoot {
                 Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.surface }
 
                 // ---- microfone ----
-                Text { text: "Microfone"; color: theme.fgDim; font.pixelSize: 11; font.bold: true }
+                Text { text: "Microfone"; color: theme.fgBright; font.pixelSize: 13; font.bold: true }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 10
                     Text { text: mics.mut ? "󰍭" : "󰍬"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 18
@@ -3183,7 +3642,7 @@ ShellRoot {
                         required property var modelData
                         Layout.fillWidth: true
                         implicitHeight: 34; radius: 8
-                        color: modelData.active ? Qt.alpha(theme.ok, 0.2) : (srcMa.containsMouse ? Qt.alpha(theme.ok, 0.12) : "transparent")
+                        color: modelData.active ? Qt.alpha(theme.ok, 0.2) : (srcMa.containsMouse ? theme.surface2 : "transparent")
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
                             Text { font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
@@ -3346,7 +3805,15 @@ ShellRoot {
                                             source: {
                                                 var ready = DesktopEntries.applications.values.length;  // re-avalia ao carregar
                                                 var id = thumb.modelData.appId;
+                                                // janela sem appId existe (XWayland cru, janela recem-mapeada) e
+                                                // `undefined.indexOf` estourava TypeError vivo no log
+                                                if (!id || !id.length) return "";
                                                 var de = DesktopEntries.byId(id) || DesktopEntries.heuristicLookup(id);
+                                                // Catalogo ainda carregando (~2s apos o boot): nao pede icone com o
+                                                // nome da CLASSE, que quase nunca e nome de icone valido
+                                                // ("brave-browser" contra "brave-desktop"). Volta vazio e re-avalia
+                                                // sozinho quando o catalogo chegar.
+                                                if (!de && ready === 0) return "";
                                                 var icon = (de && de.icon && de.icon.length) ? de.icon : id;
                                                 // jogos Steam: janela steam_app_<id> -> icone steam_icon_<id>
                                                 if (id.indexOf("steam_app_") === 0) icon = "steam_icon_" + id.substring(10);

@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Descobre onde o Claude Code esta rodando, a partir das janelas do Hyprland.
+
+Existe porque a mesma logica estava copiada em tres lugares e cada copia teve
+que ser consertada separadamente. As tres falharam pelo mesmo motivo: usavam
+`pgrep -P`, que so acha filho DIRETO, e o Claude quase nunca e filho direto do
+terminal. As arvores reais sao:
+
+    kitty -> claude                      (aberto com `kitty -e claude`)
+    kitty -> bash -> claude              (o Lucas digitou `claude` no shell)
+    kitty -> bash -lc -> claude          (aberto pelo claude-restart)
+
+Consumidores:
+    ~/.local/bin/claude-restart
+    ~/.config/quickshell/KittyStrip.qml
+
+Uso:
+    claude-janela pid <pid_da_janela>     -> pid do claude naquela janela
+    claude-janela sessao <pid_do_claude>  -> uuid da sessao que ele escreve
+    claude-janela lista                   -> JSON das janelas kitty com Claude
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+PROFUNDIDADE_MAX = 6
+PROJ_DIR = os.path.expanduser('~/.claude/projects/-home-lucas')
+
+
+def _arvore():
+    """Mapa pai -> filhos e pid -> linha de comando, lido de /proc uma vez so."""
+    filhos, cmd = {}, {}
+    for d in os.listdir('/proc'):
+        if not d.isdigit():
+            continue
+        try:
+            st = open('/proc/' + d + '/stat').read()
+            ppid = int(st[st.rindex(')') + 2:].split()[1])
+            filhos.setdefault(ppid, []).append(int(d))
+            cmd[int(d)] = open('/proc/' + d + '/cmdline', 'rb').read().decode('utf8', 'replace')
+        except Exception:
+            pass
+    return filhos, cmd
+
+
+def _eh_claude(linha):
+    return 'claude-code/bin/claude' in linha or linha.split(chr(0))[0].endswith('/claude')
+
+
+def claude_em(pid, filhos=None, cmd=None):
+    """pid do claude na arvore de descendentes de `pid`, ou None."""
+    if filhos is None:
+        filhos, cmd = _arvore()
+
+    def busca(p, prof=0):
+        if prof > PROFUNDIDADE_MAX:
+            return None
+        for f in filhos.get(p, []):
+            if _eh_claude(cmd.get(f, '')):
+                return f
+            achou = busca(f, prof + 1)
+            if achou:
+                return achou
+        return None
+
+    return busca(int(pid))
+
+
+def sessao_de(claude_pid):
+    """uuid da sessao que esse processo esta ESCREVENDO.
+
+    Casa o horario de nascimento do .jsonl com o horario de inicio do processo.
+
+    Nao usar o `--resume` da linha de comando: com --fork-session, que o
+    claude-restart usa, o id do --resume e a sessao de ORIGEM e o Claude cria uma
+    NOVA para escrever. Medido: uma janela com `--resume cbf7f9e1` estava de fato
+    escrevendo em 4c8fbf97. Retomar pelo --resume perderia todo o trabalho feito
+    desde o ultimo restart.
+
+    Tem que ser o birth time, nao o ctime: o Claude escreve o tempo todo, entao
+    o ctime de todo .jsonl seria "agora". O Python desta maquina nao expoe
+    st_birthtime, entao vai pelo `stat` do coreutils, que le do btrfs.
+    """
+    try:
+        st = open('/proc/%d/stat' % int(claude_pid)).read()
+        ticks = int(st[st.rindex(')') + 2:].split()[19])
+        boot = next(int(l.split()[1]) for l in open('/proc/stat') if l.startswith('btime'))
+        inicio = boot + ticks / os.sysconf('SC_CLK_TCK')
+    except Exception:
+        return None
+
+    melhor, dist = None, None
+    for nome in os.listdir(PROJ_DIR) if os.path.isdir(PROJ_DIR) else []:
+        if not nome.endswith('.jsonl'):
+            continue
+        caminho = os.path.join(PROJ_DIR, nome)
+        try:
+            saida = subprocess.run(['stat', '-c', '%W', caminho],
+                                   capture_output=True, text=True, timeout=5).stdout.strip()
+            nasceu = int(saida)
+        except Exception:
+            continue
+        if nasceu <= 0:
+            continue
+        d = nasceu - inicio
+        # janela generosa: o transcript nasce logo apos o processo subir
+        if -5 <= d <= 180 and (dist is None or abs(d) < abs(dist)):
+            melhor, dist = nome[:-len('.jsonl')], d
+    return melhor
+
+
+def lista_janelas():
+    """Janelas kitty VISIVEIS rodando Claude: [{x, y, w}].
+
+    O filtro de visibilidade nao e detalhe. A faixa do KittyStrip mora numa
+    camada do layershell e nada a cobre: sem checar `visible`, ela desenhava por
+    cima do Discord em tela cheia, porque sabia ONDE o kitty estava mas nao se
+    dava para ve-lo. `fullscreen` tambem sai, porque ai o hyprbars nao desenha
+    barra de titulo e o deslocamento de -28 jogaria a faixa sobre o terminal.
+    """
+    try:
+        bruto = subprocess.run(['hyprctl', 'clients', '-j'],
+                               capture_output=True, text=True, timeout=10).stdout
+        clientes = json.loads(bruto)
+        bruto_mon = subprocess.run(['hyprctl', 'monitors', '-j'],
+                                   capture_output=True, text=True, timeout=10).stdout
+        monitores = json.loads(bruto_mon)
+    except Exception:
+        return []
+
+    # workspace que esta REALMENTE aparecendo em cada monitor. `visible` do
+    # hyprctl clients nao serve sozinho: janela minimizada (special:min-<addr>)
+    # e janela em workspace de fundo reportam visible=True, e a faixa acabava
+    # desenhada nas coordenadas velhas delas por cima do que estivesse ali.
+    # Aconteceu de novo em 2026-08-14, com a faixa sobre um jogo em tela cheia.
+    ws_visiveis = set()
+    for m in monitores:
+        aw = (m.get('activeWorkspace') or {}).get('id')
+        if aw is not None:
+            ws_visiveis.add(aw)
+
+    filhos, cmd = _arvore()
+    saida = []
+    for c in clientes:
+        if (c.get('class') or '').lower() != 'kitty':
+            continue
+        if not c.get('pid') or not c.get('at') or not c.get('size'):
+            continue
+        if not c.get('visible'):
+            continue
+        if c.get('fullscreen'):
+            continue
+        ws = c.get('workspace') or {}
+        # minimizada: mora num special:min-<addr> proprio
+        if str(ws.get('name') or '').startswith('special:'):
+            continue
+        # em workspace de fundo, que nao esta sendo exibido em monitor nenhum
+        if ws.get('id') not in ws_visiveis:
+            continue
+        if claude_em(c['pid'], filhos, cmd):
+            saida.append({'x': c['at'][0], 'y': c['at'][1], 'w': c['size'][0]})
+    return saida
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+
+    modo = args[0]
+
+    if modo == 'pid':
+        if len(args) < 2:
+            print('uso: claude-janela pid <pid_da_janela>', file=sys.stderr)
+            return 2
+        r = claude_em(args[1])
+        print(r if r else '')
+        return 0 if r else 1
+
+    if modo == 'sessao':
+        if len(args) < 2:
+            print('uso: claude-janela sessao <pid_do_claude>', file=sys.stderr)
+            return 2
+        r = sessao_de(args[1])
+        print(r if r else '')
+        return 0 if r else 1
+
+    if modo == 'lista':
+        print(json.dumps(lista_janelas()))
+        return 0
+
+    print('modo desconhecido: %s' % modo, file=sys.stderr)
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

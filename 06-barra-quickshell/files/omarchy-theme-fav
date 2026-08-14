@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Favoritos de tema. Guarda um slug por linha, na ORDEM em que foram favoritados.
+#
+# A interface no Quickshell (shell.qml, `orderedThemes` ~394 e o menu de contexto
+# ~3281) ja existia e ja chamava este script, mas ele nunca tinha sido escrito:
+# o `Process` falhava calado, o `cat` do arquivo tambem, `favorites` ficava vazio
+# e favoritar nao fazia absolutamente nada. Nao ha equivalente upstream no
+# Omarchy (`~/.local/share/omarchy/bin` nao tem nada de favoritos).
+#
+# A ordem do arquivo E a ordem de exibicao dentro do bloco de favoritos, entao
+# favoritar ANEXA no fim: quem ja era favorito nao muda de lugar. Subir acontece
+# de todo jeito, porque favorito sempre vem antes de nao-favorito.
+#
+# Uso: omarchy-theme-fav {toggle|add|remove|list|is} <slug>
+set -uo pipefail
+
+STORE="${OMARCHY_THEME_FAVORITES:-$HOME/.config/omarchy/theme-favorites}"
+
+_garante() {
+  mkdir -p "$(dirname "$STORE")" || return 1
+  [ -f "$STORE" ] || : > "$STORE"
+}
+
+# le o arquivo sem linha vazia e sem repetido, preservando a ordem
+_lista() {
+  [ -f "$STORE" ] || return 0
+  awk 'NF && !vistos[$0]++' "$STORE"
+}
+
+_tem() { _lista | grep -qxF "$1"; }
+
+# escrita atomica no MESMO diretorio: mv entre sistemas de arquivo nao e atomico,
+# e um corte no meio da escrita perderia a lista inteira
+_grava() {
+  local tmp
+  tmp="$(mktemp "${STORE}.XXXXXX")" || return 1
+  cat > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$STORE"
+}
+
+cmd_add() {
+  local s="$1"
+  _garante || exit 1
+  _tem "$s" && return 0
+  { _lista; printf '%s\n' "$s"; } | _grava
+}
+
+cmd_remove() {
+  local s="$1"
+  [ -f "$STORE" ] || return 0
+  _lista | grep -vxF "$s" | _grava
+}
+
+cmd_toggle() {
+  local s="$1"
+  if _tem "$s"; then cmd_remove "$s"; else cmd_add "$s"; fi
+}
+
+case "${1:-}" in
+  toggle) [ -n "${2:-}" ] || exit 2; cmd_toggle "$2" ;;
+  add)    [ -n "${2:-}" ] || exit 2; cmd_add "$2" ;;
+  remove) [ -n "${2:-}" ] || exit 2; cmd_remove "$2" ;;
+  is)     [ -n "${2:-}" ] || exit 2; _tem "$2" ;;
+  list)   _lista ;;
+  *) echo "uso: omarchy-theme-fav {toggle|add|remove|is|list} <slug>" >&2; exit 2 ;;
+esac

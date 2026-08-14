@@ -105,6 +105,27 @@ ColumnLayout {
     property real vMaxX: { var v = 0; for (var i = 0; i < vlay.length; i++) { var e = vlay[i].vx + vlay[i].nw; v = i ? Math.max(v, e) : e; } return v; }
     property real vMaxY: { var v = 0; for (var i = 0; i < vlay.length; i++) { var e = vlay[i].vy + vlay[i].nh; v = i ? Math.max(v, e) : e; } return v; }
 
+    // faixa de sobreposicao LOGICA real entre o principal e um secundario, na
+    // mesma conta que _snap ja usa (_lw/_lh). E o que decide se o cursor
+    // atravessa sem travar, nao o tamanho nativo desenhado no mapa. Devolve
+    // o intervalo convertido pro mesmo espaco visual de vx/vy (native-visual
+    // do principal), pra desenhar sobre o mapa sem mentir.
+    function _overlapBand(name) {
+        if (!panel.mons.length) return null;
+        var prim = panel.draft[panel.mons[0].name], c = panel.draft[name];
+        if (!prim || !c || !c.enabled) return null;
+        var s = prim.scale;
+        var plw = _lw(prim), plh = _lh(prim), slw = _lw(c), slh = _lh(c);
+        // mesmo criterio de lado que _computeVisual usa pra decidir esq/dir/cima/baixo
+        if (c.x >= prim.x + plw || c.x + slw <= prim.x) {
+            var y0 = Math.max(prim.y, c.y), y1 = Math.min(prim.y + plh, c.y + slh);
+            return { axis: "y", v0: (y0 - prim.y) * s, v1: (y1 - prim.y) * s, ok: y1 > y0 };
+        } else {
+            var x0 = Math.max(prim.x, c.x), x1 = Math.min(prim.x + plw, c.x + slw);
+            return { axis: "x", v0: (x0 - prim.x) * s, v1: (x1 - prim.x) * s, ok: x1 > x0 };
+        }
+    }
+
     // gruda em alvos de alinhamento quando o valor arrastado esta a <= thr deles; senao
     // deixa livre. Evita zona morta: bordas desalinhadas fazem o cursor travar ao cruzar.
     function _magnet(v, targets, thr) {
@@ -290,6 +311,31 @@ ColumnLayout {
                 }
             }
         }
+
+        // faixa de sobreposicao logica real, uma por secundario habilitado.
+        // desenhada por cima dos tiles pra o Lucas conferir antes de Aplicar
+        // se a posicao arrastada realmente vai deixar o cursor atravessar.
+        Repeater {
+            model: panel.vlay
+            delegate: Rectangle {
+                required property var modelData
+                property var band: modelData.isPrim ? null : panel._overlapBand(modelData.name)
+                // borda em que o secundario encosta no principal (mesma logica de
+                // vx/vy em _computeVisual: lado positivo = vx/vy > 0; lado negativo
+                // = a propria borda oposta do tile, vx+nw ou vy+nh)
+                property real boundary: band && band.axis === "x"
+                    ? (modelData.vy > 0 ? modelData.vy : modelData.vy + modelData.nh)
+                    : (modelData.vx > 0 ? modelData.vx : modelData.vx + modelData.nw)
+                visible: band !== null && band.ok
+                color: Qt.alpha(theme.ok, 0.7)
+                x: band && band.axis === "x" ? mapArea.ox + (band.v0 - panel.vMinX) * mapArea.factor
+                                              : mapArea.ox + (boundary - panel.vMinX) * mapArea.factor - 1.5
+                y: band && band.axis === "y" ? mapArea.oy + (band.v0 - panel.vMinY) * mapArea.factor
+                                              : mapArea.oy + (boundary - panel.vMinY) * mapArea.factor - 1.5
+                width: band && band.axis === "x" ? (band.v1 - band.v0) * mapArea.factor : 3
+                height: band && band.axis === "y" ? (band.v1 - band.v0) * mapArea.factor : 3
+            }
+        }
     }
 
     // texto do arranjo (referencia clara de onde cada secundario ficou)
@@ -398,6 +444,18 @@ ColumnLayout {
                     MonitorStep {
                         theme: panel.theme; glyph: "󰑥"
                         onTriggered: panel._set(mrow.mname, { transform: (mrow.cfg.transform + 1) % 4 })
+                    }
+                }
+
+                // posicao X/Y real que vai pro monitors.conf, so leitura. Atualiza ao
+                // vivo porque cfg le direto de panel.draft, que _setPos/_snap mutam.
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    visible: mrow.cfg.enabled
+                    Text { text: "Posição"; color: theme.fg; font.pixelSize: 11; Layout.fillWidth: true }
+                    Text {
+                        text: "x " + mrow.cfg.x + "  y " + mrow.cfg.y
+                        color: theme.fgDim; font.pixelSize: 10
                     }
                 }
             }
