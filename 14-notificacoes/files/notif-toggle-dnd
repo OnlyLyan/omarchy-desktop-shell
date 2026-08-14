@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Cicla o modo de notificacao: normal -> discreto -> nao perturbe -> normal.
+# (era so um toggle de nao perturbe; virou tres niveis no tema D2)
+#   normal   = som + pilula + badge
+#   discreto = som + badge, sem pilula
+#   dnd      = so historico
+set -uo pipefail
+qs ipc call notif ciclarModo

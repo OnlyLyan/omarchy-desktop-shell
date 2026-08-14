@@ -1,0 +1,6 @@
+#!/bin/bash
+# Para o mako depois do boot: as notificacoes agora sao o NotificationPanel.qml
+# do Quickshell. Nao apaga nada em ~/.local/share/omarchy (codigo fonte,
+# omarchy-update pode reescrever), so mata o processo que ja subiu.
+# Ver /home/lucas/AWA/wiki/references/rework-desktop-tema-d-notificacoes-quickshell-2026-08-14.md
+pkill -x mako 2>/dev/null || true
