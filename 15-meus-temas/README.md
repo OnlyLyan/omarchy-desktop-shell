@@ -9,6 +9,12 @@ Três coisas separadas, de propósito:
    de cada um, e um `install.sh` que reinstala tudo.
 3. **`files/`** — o que é meu: o tema `stellarum` e o wordmark da tela de descanso.
 
+O seletor fica na central de ações. Favoritar põe estrela e sobe o tema pro topo
+da lista; o tema atual vem sempre em primeiro:
+
+![Seletor de tema com favoritos](../docs/img/05-favoritos-tema.png)
+
+
 ## Por que a lista e não os temas
 
 112 dos 113 são clone de repositório de outra pessoa. Copiar o conteúdo pra cá

@@ -8,6 +8,19 @@ que você quer manter aberta mas não quer ver.
 Guardar é um clique no botão azul da barra de título. Tirar é um clique na
 miniatura, dentro da gaveta.
 
+![Gaveta com miniaturas ao vivo](../docs/img/02-gaveta-miniaturas.png)
+
+O botao azul na barra de titulo e o gatilho, o mais longe possivel do vermelho de
+fechar:
+
+![Barra de titulo com o botao da gaveta](../docs/img/01-barra-titulo.png)
+
+Com muita coisa guardada, o chevron no cabecalho troca as miniaturas por linhas
+de icone + titulo:
+
+![Gaveta no modo compacto](../docs/img/03-gaveta-compacta.png)
+
+
 ## Como funciona
 
 Guardar move a janela pro workspace especial `special:gav-<endereço>`, um por

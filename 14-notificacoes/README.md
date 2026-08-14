@@ -12,6 +12,9 @@ Três modos, ciclados pelo sino da barra ou por `SUPER+CTRL+vírgula`:
 | discreto | só o ícone do app pisca na taskbar, sem pílula e sem som |
 | não perturbe | nada aparece; tudo vai pro histórico |
 
+![Notificacao em pilula](../docs/img/04-notificacao.png)
+
+
 ## Como funciona
 
 `NotificationServer` do Quickshell registra o serviço

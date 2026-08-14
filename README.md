@@ -8,6 +8,33 @@ Ambiente: Omarchy (Arch + Hyprland), Wayland, PipeWire, Bash. Caminhos com `~` s
 ao seu HOME. Cada pasta tem `README.md` (o que faz, por que, como foi feito), `files/` (os
 arquivos reais) e `install.sh` idempotente.
 
+## Como fica
+
+Barra de titulo com os quatro botoes: fechar, minimizar, maximizar e **guardar na
+gaveta** (o azul, mais longe possivel do vermelho).
+
+![Barra de titulo com os quatro botoes](docs/img/01-barra-titulo.png)
+
+A gaveta, com miniatura ao vivo de cada janela guardada:
+
+![Gaveta com miniaturas ao vivo](docs/img/02-gaveta-miniaturas.png)
+
+E no modo compacto, que troca as miniaturas por icone + titulo quando ha muita
+coisa guardada:
+
+![Gaveta no modo compacto](docs/img/03-gaveta-compacta.png)
+
+Notificacao propria no lugar do mako, no mesmo desenho da barra. O chevron abre o
+corpo inteiro da mensagem; clicar leva pra janela de origem:
+
+![Notificacao em pilula](docs/img/04-notificacao.png)
+
+Seletor de tema na central, com favoritos: o favoritado ganha estrela e sobe pro
+topo da lista (o tema atual vem sempre em primeiro):
+
+![Seletor de tema com favoritos](docs/img/05-favoritos-tema.png)
+
+
 ## Componentes
 
 | Pasta | O que e |
