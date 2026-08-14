@@ -12,6 +12,10 @@
 #   06 scripts wifi-list.sh / wifi-connect.sh (vivo tem um wifi.sh unico)
 #   06 scripts weather.sh, hooks/, autostart.snippet.conf
 #   05 snippets do hypr e window-minimize, 08 binarios, 09 pc-heartbeat
+#
+# NAO mapeado de proposito: 15-meus-temas/temas.tsv (regerado por
+# `15-meus-temas/gera-lista.sh`, nao e copia 1:1 de um arquivo vivo) e os
+# patches/, que sao diff de repositorio de terceiro.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -30,6 +34,19 @@ MAP=(
   "$QS/MonitorStep.qml::11-monitor-panel/files/MonitorStep.qml"
   "$QS/scripts/monitors.sh::11-monitor-panel/files/scripts/monitors.sh"
   "$QS/scripts/test-monitors.sh::11-monitor-panel/files/scripts/test-monitors.sh"
+  "$QS/KittyStrip.qml::06-barra-quickshell/files/KittyStrip.qml"
+  "$QS/scripts/taskbar-app.sh::06-barra-quickshell/files/scripts/taskbar-app.sh"
+  "$QS/scripts/wifi.sh::06-barra-quickshell/files/scripts/wifi.sh"
+  "$BIN/omarchy-theme-fav::06-barra-quickshell/files/omarchy-theme-fav"
+  "$BIN/show-desktop::06-barra-quickshell/files/show-desktop"
+  "$BIN/claude-janela::06-barra-quickshell/files/claude-janela"
+  "$HOME/.config/hypr/hyprbars.conf::05-hyprbars-titlebar/files/hyprbars.conf"
+  "$QS/GavetaPanel.qml::13-gaveta-de-janelas/files/GavetaPanel.qml"
+  "$QS/scripts/gaveta.sh::13-gaveta-de-janelas/files/scripts/gaveta.sh"
+  "$QS/NotificationPanel.qml::14-notificacoes/files/NotificationPanel.qml"
+  "$BIN/notif-toggle-dnd::14-notificacoes/files/notif-toggle-dnd"
+  "$HOME/.config/omarchy/hooks/post-boot.d/10-stop-mako::14-notificacoes/files/10-stop-mako"
+  "$HOME/.config/omarchy/branding/screensaver.txt::15-meus-temas/files/branding/screensaver.txt"
 )
 
 dry=0

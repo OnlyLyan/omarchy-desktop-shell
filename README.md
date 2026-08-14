@@ -19,6 +19,9 @@ arquivos reais) e `install.sh` idempotente.
 | `09-pc-heartbeat` | Os "batimentos" do PC: coracao + grafico de ECG + bpm que aceleram e ficam vermelhos sob estresse (CPU/RAM/temp). Componente reutilizavel + demo standalone; ja integrado na barra (06) |
 | `11-monitor-panel` | Configuracao de monitores nativa na central: mapa arrastavel com snap magnetico, escala/rotacao/on-off, preview com toast de confirmacao e watchdog, perfis. Integrado na barra (06) |
 | `12-phone-link` | Conexao com o celular Android pela rede local: daemon proprio (`phoned`) com descoberta, pareamento e canal TLS, mais a CLI `phonectl`. Fatia 1: so transporte, sem UI |
+| `13-gaveta-de-janelas` | Guarda uma janela fora do caminho sem fechar: some da taskbar e do Alt+Tab, volta pela gaveta. Botao na barra de titulo, miniatura ao vivo, modo compacto. Integrado na barra (06) |
+| `14-notificacoes` | Notificacoes proprias no lugar do mako: pilula compacta com dropdown, tres modos (normal/discreto/nao perturbe), historico na central. Integrado na barra (06) |
+| `15-meus-temas` | Corretor de temas do Omarchy que quebram em Hyprland recente (sintaxe morta e chaves de cor faltando), lista dos 113 temas instalados com origem, e o que e meu: tema `stellarum` e o wordmark da tela de descanso |
 
 A barra (06) e **theme-aware**: le o `colors.toml` do tema ativo do Omarchy e troca junto, com
 seletor de tema na central de acoes (card Personalizacao). Detalhes no README da pasta 06.
