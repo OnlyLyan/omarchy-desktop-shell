@@ -11,7 +11,7 @@
 // volta ate ela. Por isso a lista vem sempre do Hyprland (`Hyprland.toplevels`),
 // nunca de arquivo: janela morta nao aparece, logo nao vira slot fantasma.
 //
-// Plano: /home/lucas/AWA/wiki/references/rework-desktop-gaveta-de-janelas-v2-2026-08-14.md
+// Plano: wiki/references/rework-desktop-gaveta-de-janelas-v2-2026-08-14.md
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -22,6 +22,10 @@ import QtQml.Models
 
 Scope {
     id: root
+    // HOME em vez de caminho absoluto: caminho com usuario fixo quebra pra
+    // qualquer outra pessoa, e o repo deste shell e publico.
+    readonly property string lar: Quickshell.env("HOME")
+
     property var theme: null
 
     // "fechada" | "guardar" | "tirar"
@@ -175,19 +179,19 @@ Scope {
     function guardar(addr) {
         addr = root._ende(addr);
         if (!addr) return;
-        root._rodar(["/home/lucas/.config/quickshell/scripts/gaveta.sh", "guardar", addr],
+        root._rodar([lar + "/.config/quickshell/scripts/gaveta.sh", "guardar", addr],
                     function () { root.recarregar(); root.modo = "fechada"; root.pendente = ""; });
     }
     function tirar(addr) {
         addr = root._ende(addr);
         if (!addr) return;
         root.saindo[addr] = true;   // saida nossa, nao e morte de janela
-        root._rodar(["/home/lucas/.config/quickshell/scripts/gaveta.sh", "tirar", addr],
+        root._rodar([lar + "/.config/quickshell/scripts/gaveta.sh", "tirar", addr],
                     function () { root.recarregar(); root.modo = "fechada"; });
     }
     function tirarTudo() {
         for (var i = 0; i < modelo.count; i++) root.saindo[modelo.get(i).addr] = true;
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/gaveta.sh", "tirar-tudo"]);
+        Quickshell.execDetached([lar + "/.config/quickshell/scripts/gaveta.sh", "tirar-tudo"]);
         root.modo = "fechada";
         recarregarDepois.restart();
     }

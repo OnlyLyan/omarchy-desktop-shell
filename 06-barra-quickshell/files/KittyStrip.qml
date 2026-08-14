@@ -19,6 +19,10 @@ import QtQuick.Layouts
 
 Scope {
     id: root
+    // HOME em vez de caminho absoluto: caminho com usuario fixo quebra pra
+    // qualquer outra pessoa, e o repo deste shell e publico.
+    readonly property string lar: Quickshell.env("HOME")
+
 
     // tema ativo, passado pelo shell.qml (mesmo padrao do MonitorPanel.qml).
     // sem isso as cores ficam hex fixo, nunca acompanham troca de tema.
@@ -64,7 +68,7 @@ Scope {
         // visibilidade a faixa desenhava por cima do Discord em tela cheia,
         // porque ela mora numa camada do layershell e nada a cobre: sabia ONDE
         // o kitty estava, mas nao se dava para ve-lo.
-        command: ["/home/lucas/.local/bin/claude-janela", "lista"]
+        command: [lar + "/.local/bin/claude-janela", "lista"]
         stdout: StdioCollector {
             onStreamFinished: {
                 try { root.janelas = JSON.parse(this.text.trim()) || []; }
@@ -106,8 +110,8 @@ Scope {
         id: abreMenu
         command: ["sh", "-c",
             "kitty @ launch --type=overlay --title Ferramentas " +
-            "/home/lucas/.local/bin/barra-ferramentas 2>/dev/null || " +
-            "setsid kitty --title Ferramentas -e /home/lucas/.local/bin/barra-ferramentas"]
+            lar + "/.local/bin/barra-ferramentas 2>/dev/null || " +
+            "setsid kitty --title Ferramentas -e " + lar + "/.local/bin/barra-ferramentas"]
     }
 
     // ---- eventos do Hyprland: reconsulta quando algo muda ----

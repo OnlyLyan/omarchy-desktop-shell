@@ -7,6 +7,9 @@ import QtQuick
 import QtQuick.Layouts
 
 ColumnLayout {
+    // HOME em vez de caminho absoluto: o repo deste shell e publico.
+    readonly property string lar: Quickshell.env("HOME")
+
     id: panel
     property var theme: null
     property var screen: null
@@ -21,7 +24,7 @@ ColumnLayout {
     // ===== IO: ler estado =====
     Process {
         id: getProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "get"]
+        command: [lar + "/.config/quickshell/scripts/monitors.sh", "get"]
         stdout: StdioCollector { onStreamFinished: panel._ingest(this.text) }
     }
     function reload() { getProc.running = true }
@@ -204,7 +207,7 @@ ColumnLayout {
     Process { id: previewProc; onExited: panel.applied() }
     function preview() {
         if (!_anyEnabled()) return;
-        previewProc.command = ["/home/lucas/.config/quickshell/scripts/monitors.sh", "preview"].concat(_lines());
+        previewProc.command = [lar + "/.config/quickshell/scripts/monitors.sh", "preview"].concat(_lines());
         previewProc.running = true;
     }
 
@@ -213,7 +216,7 @@ ColumnLayout {
     function loadProfiles() { profListProc.running = true }
     Process {
         id: profListProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "profiles-list"]
+        command: [lar + "/.config/quickshell/scripts/monitors.sh", "profiles-list"]
         stdout: StdioCollector { onStreamFinished: panel.profiles = this.text.trim() ? this.text.trim().split("\n") : [] }
     }
 

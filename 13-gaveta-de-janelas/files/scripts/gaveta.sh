@@ -12,7 +12,7 @@
 # importa porque a janela guardada some da taskbar, e a gaveta vira o unico
 # caminho de volta ate ela.
 #
-# Ver plano: /home/lucas/AWA/wiki/references/rework-desktop-gaveta-de-janelas-v2-2026-08-14.md
+# Ver plano: wiki/references/rework-desktop-gaveta-de-janelas-v2-2026-08-14.md
 set -uo pipefail
 
 PREFIX="special:gav"

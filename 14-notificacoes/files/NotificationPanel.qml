@@ -11,7 +11,7 @@
 //   - X e chevron mortos ao clicar
 // Agora o estado mora num ListModel: append/remove por item, delegate nasce uma
 // vez e vive ate a sua propria pilula sair. Ver plano:
-// /home/lucas/AWA/wiki/references/rework-desktop-tema-d2-notificacoes-redesenho-2026-08-14.md
+// wiki/references/rework-desktop-tema-d2-notificacoes-redesenho-2026-08-14.md
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -23,6 +23,10 @@ import QtQml.Models
 
 Scope {
     id: root
+    // HOME em vez de caminho absoluto: caminho com usuario fixo quebra pra
+    // qualquer outra pessoa, e o repo deste shell e publico.
+    readonly property string lar: Quickshell.env("HOME")
+
     property var theme: null
 
     readonly property int maxVisiveis: 5
@@ -62,7 +66,7 @@ Scope {
 
     FileView {
         id: modoFile
-        path: "/home/lucas/.local/state/notif-modo"
+        path: lar + "/.local/state/notif-modo"
         onLoaded: {
             var m = (this.text() || "").trim();
             if (m === "normal" || m === "discreto" || m === "dnd") root.modo = m;
@@ -114,7 +118,7 @@ Scope {
     // ===== historico em disco =====
     FileView {
         id: histFile
-        path: "/home/lucas/.local/state/notif-history.json"
+        path: lar + "/.local/state/notif-history.json"
         atomicWrites: true
         onLoaded: {
             try {
@@ -361,7 +365,7 @@ Scope {
         // (ver window-minimize na nota de customizacoes)
         if (reg.appId && reg.appId !== "notify-send") {
             Quickshell.execDetached(
-                ["/home/lucas/.config/quickshell/scripts/taskbar-activate.sh", reg.appId]);
+                [lar + "/.config/quickshell/scripts/taskbar-activate.sh", reg.appId]);
             root.limparPendente(reg.appId);
         }
         root.fechar(nid);
@@ -384,7 +388,7 @@ Scope {
         var appId = root._appIdDeCampos(it.desktopEntry, it.appName);
         if (appId && appId !== "notify-send")
             Quickshell.execDetached(
-                ["/home/lucas/.config/quickshell/scripts/taskbar-activate.sh", appId]);
+                [lar + "/.config/quickshell/scripts/taskbar-activate.sh", appId]);
     }
     function removerHistorico(i) {
         var h = root.historyList.slice();

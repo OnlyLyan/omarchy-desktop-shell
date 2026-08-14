@@ -25,6 +25,10 @@ ShellRoot {
     NotificationPanel { id: notifPanel; theme: theme }
 
     id: root
+
+    // HOME em vez de caminho absoluto: caminho com usuario fixo quebra pra
+    // qualquer outra pessoa, e o repo deste shell e publico.
+    readonly property string lar: Quickshell.env("HOME")
     // estado global: central de acoes (dropdown estilo Windows) aberta?
     property bool acOpen: false
     property var acScreen: null   // monitor onde a central abre (o do chevron clicado)
@@ -62,7 +66,7 @@ ShellRoot {
 
     // forcar: SIGKILL no processo da janela e nos descendentes (app travado)
     function appKill(appId: string): void {
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/taskbar-app.sh",
+        Quickshell.execDetached([lar + "/.config/quickshell/scripts/taskbar-app.sh",
                                  "kill", appId]);
     }
 
@@ -175,7 +179,7 @@ ShellRoot {
     // le e observa o colors.toml; chama theme.parse no load e a cada troca de tema
     FileView {
         id: themeFile
-        path: "/home/lucas/.config/omarchy/current/theme/colors.toml"
+        path: lar + "/.config/omarchy/current/theme/colors.toml"
         watchChanges: true
         // API confirmada (Quickshell.Io FileView): text() le conteudo, signals
         // loaded/fileChanged, metodo reload(). parse roda no load inicial e em
@@ -225,13 +229,13 @@ ShellRoot {
     property int monPending: 0
     Process {
         id: monPendingProc
-        command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "pending"]
+        command: [lar + "/.config/quickshell/scripts/monitors.sh", "pending"]
         stdout: StdioCollector { onStreamFinished: { var n = parseInt(this.text.trim()); root.monPending = isNaN(n) ? 0 : n; } }
     }
     // Confirmar persiste e AGORA recarrega a cena, que e quando os surfaces (barra) sao
     // corrigidos pra nova geometria. Reverter/watchdog tambem recarregam.
-    Process { id: monConfirmProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "confirm"]; onExited: Quickshell.reload(true) }
-    Process { id: monCancelProc; command: ["/home/lucas/.config/quickshell/scripts/monitors.sh", "cancel"]; onExited: Quickshell.reload(true) }
+    Process { id: monConfirmProc; command: [lar + "/.config/quickshell/scripts/monitors.sh", "confirm"]; onExited: Quickshell.reload(true) }
+    Process { id: monCancelProc; command: [lar + "/.config/quickshell/scripts/monitors.sh", "cancel"]; onExited: Quickshell.reload(true) }
     Timer {
         id: monPendingTimer; interval: 1000; repeat: true; running: root.monPending > 0
         onTriggered: { root.monPending--; }  // cosmetico; o revert real e do watchdog
@@ -329,7 +333,7 @@ ShellRoot {
     property bool wifiBusy: false
     Process {
         id: wifiListProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "list"]
+        command: [lar + "/.config/quickshell/scripts/wifi.sh", "list"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = this.text.trim().split("\n");
@@ -349,15 +353,15 @@ ShellRoot {
     }
     Process {
         id: wifiStateProc
-        command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "state"]
+        command: [lar + "/.config/quickshell/scripts/wifi.sh", "state"]
         stdout: StdioCollector { onStreamFinished: root.wifiActive = this.text.trim() }
     }
-    Process { id: wifiScanProc; command: ["/home/lucas/.config/quickshell/scripts/wifi.sh", "scan"] }
+    Process { id: wifiScanProc; command: [lar + "/.config/quickshell/scripts/wifi.sh", "scan"] }
     Process { id: wifiActProc }   // connect/disconnect/forget (command setado em wifiCmd)
     function refreshWifi() { wifiListProc.running = true; wifiStateProc.running = true; }
     function scanWifi() { wifiScanProc.running = true; root.wifiBusy = true; }
     function wifiCmd(args) {
-        wifiActProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh"].concat(args);
+        wifiActProc.command = [lar + "/.config/quickshell/scripts/wifi.sh"].concat(args);
         wifiActProc.running = true;
     }
     property var wifiDetails: []
@@ -379,7 +383,7 @@ ShellRoot {
     }
     function wifiFetchDetails(ssid) {
         root.wifiDetails = [];
-        wifiDetailsProc.command = ["/home/lucas/.config/quickshell/scripts/wifi.sh", "details", ssid];
+        wifiDetailsProc.command = [lar + "/.config/quickshell/scripts/wifi.sh", "details", ssid];
         wifiDetailsProc.running = true;
     }
 
@@ -438,13 +442,13 @@ ShellRoot {
     }
     Process {
         id: curThemeProc
-        command: ["cat", "/home/lucas/.config/omarchy/current/theme.name"]
+        command: ["cat", lar + "/.config/omarchy/current/theme.name"]
         stdout: StdioCollector { onStreamFinished: { root.currentTheme = this.text.trim(); } }
     }
     // le a lista de favoritos (um slug por linha)
     Process {
         id: favReadProc
-        command: ["cat", "/home/lucas/.config/omarchy/theme-favorites"]
+        command: ["cat", lar + "/.config/omarchy/theme-favorites"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var out = [], lines = this.text.split("\n");
@@ -459,7 +463,7 @@ ShellRoot {
     // alterna favorito e recarrega a lista ao terminar (grade reordena + estrela atualiza)
     Process { id: favToggleProc; onExited: favReadProc.running = true }
     function toggleFav(snake) {
-        favToggleProc.command = ["/home/lucas/.local/bin/omarchy-theme-fav", "toggle", snake];
+        favToggleProc.command = [lar + "/.local/bin/omarchy-theme-fav", "toggle", snake];
         favToggleProc.running = true;
         root.themeMenuOpenFor = "";
     }
@@ -522,9 +526,9 @@ ShellRoot {
     // reconciliam o estado real um pouco depois (o clique ja virou na hora, otimista)
     Timer { id: tgDelay; interval: 800; repeat: false; onTriggered: tgProc.running = true }
     function toggleCaffeine() { tg.caffeine = !tg.caffeine; Quickshell.execDetached(["sh", "-c", "export PATH=\"$HOME/.local/share/omarchy/bin:$PATH\"; omarchy-toggle-idle"]); tgDelay.restart(); }
-    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached(["/home/lucas/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
+    function toggleNight() { tg.night = !tg.night; Quickshell.execDetached([lar + "/.local/bin/nightlight-toggle", "toggle"]); tgDelay.restart(); }
     function toggleMic() { tg.micMuted = !tg.micMuted; Quickshell.execDetached(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"]); tgDelay.restart(); }
-    function toggleMouseFocus() { tg.mouseFocus = !tg.mouseFocus; Quickshell.execDetached(["/home/lucas/.local/bin/mouse-focus", "toggle"]); tgDelay.restart(); }
+    function toggleMouseFocus() { tg.mouseFocus = !tg.mouseFocus; Quickshell.execDetached([lar + "/.local/bin/mouse-focus", "toggle"]); tgDelay.restart(); }
 
     // ============ volume do dispositivo de SAIDA REAL ============
     // o easyeffects_sink (default) ignora o proprio volume; controlamos o device
@@ -534,7 +538,7 @@ ShellRoot {
     property real pendingVol: -1
     Process {
         id: volProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "get"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "get"]
         stdout: StdioCollector {
             onStreamFinished: {
                 if (root.volDragging) return;   // nao sobrescreve o valor enquanto arrasta
@@ -556,7 +560,7 @@ ShellRoot {
         id: volApply; interval: 90; repeat: false
         onTriggered: {
             if (root.pendingVol >= 0) {
-                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh",
+                Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh",
                     "set", "" + Math.round(root.pendingVol * 100)]);
                 root.pendingVol = -1;
             }
@@ -570,7 +574,7 @@ ShellRoot {
     }
     function toggleVolMute() {
         vols.mut = !vols.mut;     // otimista
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "toggle"]);
+        Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "toggle"]);
     }
 
     // ---- painel de audio estilo Windows: dispositivos de saida + volume por app + bass ----
@@ -581,7 +585,7 @@ ShellRoot {
     property var mirrorSel: []         // names dos dispositivos marcados pro espelho
     Process {
         id: sinksProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sinks"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "sinks"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -593,7 +597,7 @@ ShellRoot {
     }
     Process {
         id: appsProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "apps"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "apps"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -605,12 +609,12 @@ ShellRoot {
     }
     Process {
         id: bassGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-get"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "bass-get"]
         stdout: StdioCollector { onStreamFinished: root.bassOn = (this.text.trim() === "1") }
     }
     Process {
         id: mirrorGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-get"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "mirror-get"]
         stdout: StdioCollector { onStreamFinished: {
             var s = this.text.trim();
             if (s.length > 0) { root.mirrorMode = true; root.mirrorSel = s.split(","); }
@@ -627,7 +631,7 @@ ShellRoot {
     property var micSources: []
     Process {
         id: micGetProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-get"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "mic-get"]
         stdout: StdioCollector { onStreamFinished: {
             if (root.micDragging) return;
             var p = this.text.trim().split(" "); mics.vol = (parseInt(p[0]) || 0) / 100; mics.mut = p[1] === "1";
@@ -635,7 +639,7 @@ ShellRoot {
     }
     Process {
         id: micSrcProc
-        command: ["/home/lucas/.config/quickshell/scripts/audio.sh", "sources"]
+        command: [lar + "/.config/quickshell/scripts/audio.sh", "sources"]
         stdout: StdioCollector { onStreamFinished: {
             var lines = this.text.trim().split("\n"); var arr = [];
             for (var i = 0; i < lines.length; i++) { if (!lines[i]) continue;
@@ -645,16 +649,16 @@ ShellRoot {
         } }
     }
     Timer { id: micApply; interval: 90; repeat: false; onTriggered: {
-        if (root.micPending >= 0) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
+        if (root.micPending >= 0) { Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "mic-set", "" + Math.round(root.micPending * 100)]); root.micPending = -1; } } }
     function refreshMic() { micGetProc.running = true; micSrcProc.running = true; }
     function setMicVol(f) { var ff = Math.max(0, Math.min(1, f)); mics.vol = ff; root.micPending = ff; if (!micApply.running) micApply.start(); }
-    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
-    function setInput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "input", name]);
+    function toggleMicMuteAudio() { mics.mut = !mics.mut; Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "mic-toggle"]); }
+    function setInput(name) { Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "input", name]);
                               for (var i = 0; i < micSources.length; i++) micSources[i].active = (micSources[i].name === name);
                               micSources = micSources.slice(); audioRefresh.restart(); }
 
     function refreshAudio() { sinksProc.running = true; appsProc.running = true; bassGetProc.running = true; mirrorGetProc.running = true; root.refreshVol(); root.refreshMic(); }
-    function setOutput(name) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", name]);
+    function setOutput(name) { Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "output", name]);
                                for (var i = 0; i < audioSinks.length; i++) audioSinks[i].active = (audioSinks[i].name === name);
                                audioSinks = audioSinks.slice(); audioRefresh.restart(); }
     // ---- espelho: tocar em varios dispositivos ao mesmo tempo (combine-sink) ----
@@ -671,7 +675,7 @@ ShellRoot {
         } else {
             // sai do modo espelho: desfaz o combine, volta pro 1o dispositivo
             root.mirrorSel = [];
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+            Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "mirror-off"]);
             audioRefresh.restart();
         }
     }
@@ -684,20 +688,20 @@ ShellRoot {
     }
     function applyMirror() {
         if (root.mirrorSel.length >= 2) {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror", root.mirrorSel.join(",")]);
+            Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "mirror", root.mirrorSel.join(",")]);
             root.bassOn = false;   // bass e espelho nao convivem
         } else if (root.mirrorSel.length === 1) {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "output", root.mirrorSel[0]]);
+            Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "output", root.mirrorSel[0]]);
         } else {
-            Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "mirror-off"]);
+            Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "mirror-off"]);
         }
         audioRefresh.restart();
     }
     function setAppVol(id, f) { var p = Math.round(Math.max(0, Math.min(1, f)) * 100);
-                                Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
+                                Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "app-vol", "" + id, "" + p]); }
     // redireciona saida do app para o sink indicado e reavalia
     function setAppOutput(ids, sink) {
-        Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-output", "" + ids, sink]);
+        Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "app-output", "" + ids, sink]);
         audioRefresh.restart();
     }
     // retorna objeto de audioSinks com name igual ao informado, ou null
@@ -714,7 +718,7 @@ ShellRoot {
     function sinkGlyph(icon) {
         return icon === "headphones" ? "󰋋" : (icon === "tv" ? "󰔂" : (icon === "usb" ? "󰕓" : "󰓃"));
     }
-    function toggleAppMute(id) { Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
+    function toggleAppMute(id) { Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "app-mute", "" + id]); audioRefresh.restart(); }
     // glyph por app (nerd font) pra identificar quem ta tocando no mixer
     function appIcon(name) {
         var n = (name || "").toLowerCase();
@@ -731,7 +735,7 @@ ShellRoot {
         return "󰝚";
     }
     function toggleBassNew() { root.bassOn = !root.bassOn;
-                               Quickshell.execDetached(["/home/lucas/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
+                               Quickshell.execDetached([lar + "/.config/quickshell/scripts/audio.sh", "bass-toggle"]); audioRefresh.restart(); }
     Timer { id: audioRefresh; interval: 600; repeat: false; onTriggered: root.refreshAudio() }
 
     // ============ GPU (NVIDIA): temperatura + uso, por polling ============
@@ -835,7 +839,7 @@ ShellRoot {
         // activate() cru nao lida com minimizada.
         if (tl.appId && tl.appId.length)
             Quickshell.execDetached([
-                "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                lar + "/.config/quickshell/scripts/taskbar-activate.sh",
                 tl.appId, tl.title || ""]);
         else
             tl.activate();
@@ -1169,7 +1173,7 @@ ShellRoot {
                                     // pro monitor de origem; senao foca/cicla. Evita activate()
                                     // cru, que trazia o overlay especial e travava.
                                     Quickshell.execDetached([
-                                        "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                        lar + "/.config/quickshell/scripts/taskbar-activate.sh",
                                         appBtn.modelData.appId]);
                                 }
                             }
@@ -1228,7 +1232,7 @@ ShellRoot {
                                                             onClicked: {
                                                                 if (!win) return;
                                                                 Quickshell.execDetached([
-                                                                    "/home/lucas/.config/quickshell/scripts/taskbar-activate.sh",
+                                                                    lar + "/.config/quickshell/scripts/taskbar-activate.sh",
                                                                     appBtn.modelData.appId, win.title || ""]);
                                                             }
                                                         }
