@@ -1,0 +1,59 @@
+diff --git i/alacritty.toml w/alacritty.toml
+index c4223c1..dbd071d 100644
+--- i/alacritty.toml
++++ w/alacritty.toml
+@@ -7,7 +7,7 @@ foreground = "#1c2d28"
+ black   = "#dfe4c4"
+ red     = "#b14752"
+ green   = "#556753"
+-yellow  = "#dc8164"
++yellow  = "#a54425"
+ blue    = "#4c6c94"
+ magenta = "#8a5b81"
+ cyan    = "#3d727d"
+@@ -17,7 +17,7 @@ white   = "#384f54"
+ black   = "#7d8794"
+ red     = "#b14752"
+ green   = "#556753"
+-yellow  = "#dc8164"
++yellow  = "#a54425"
+ blue    = "#4c6c94"
+ magenta = "#8a5b81"
+ cyan    = "#3d727d"
+diff --git i/colors.toml w/colors.toml
+index 8f246ed..799c975 100644
+--- i/colors.toml
++++ w/colors.toml
+@@ -8,7 +8,7 @@ selection_background = "#5e81ac"
+ color0 = "#dfe4c4"
+ color1 = "#b14752"
+ color2 = "#556753"
+-color3 = "#dc8164"
++color3 = "#a54425"
+ color4 = "#4c6c94"
+ color5 = "#8a5b81"
+ color6 = "#3d727d"
+@@ -16,7 +16,7 @@ color7 = "#384f54"
+ color8 = "#7d8794"
+ color9 = "#b14752"
+ color10 = "#556753"
+-color11 = "#dc8164"
++color11 = "#a54425"
+ color12 = "#4c6c94"
+ color13 = "#8a5b81"
+ color14 = "#3d727d"
+diff --git i/kitty.conf w/kitty.conf
+index c0593f6..2913670 100644
+--- i/kitty.conf
++++ w/kitty.conf
+@@ -14,8 +14,8 @@ color2  #556753
+ color10 #556753
+ 
+ # yellow
+-color3  #dc8164
+-color11 #dc8164
++color3  #a54425
++color11 #a54425
+ 
+ # blue
+ color4  #4c6c94

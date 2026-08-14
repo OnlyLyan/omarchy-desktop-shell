@@ -1,0 +1,79 @@
+@define-color text #EDE6F5;
+@define-color base #14091F;
+@define-color surface #201332;
+@define-color border #3A2A4D;
+@define-color glow #8B5CF6;
+@define-color accent #E8B84B;
+@define-color selected-text #F5EFFF;
+@define-color foreground #EDE6F5;
+@define-color background #14091F;
+
+@keyframes open {
+    from { opacity: 0; transform: scaleY(0.3); }
+    to   { opacity: 1; transform: scaleY(1); }
+}
+
+window * {
+    all: unset;
+    color: @text;
+    background: none;
+    border: none;
+    margin: 0;
+    padding: 0;
+}
+
+window .box-wrapper {
+    background: alpha(@surface, 0.94);
+    background-image: none;
+    border-radius: 14px;
+    padding: 18px;
+    margin: 0;
+    min-width: 230px;
+    border: 2px solid alpha(@glow, 0.35);
+    animation: open 200ms cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+    transform-origin: top center;
+    box-shadow: 0 4px 24px alpha(@glow, 0.25);
+}
+
+window .search-container {
+    border: 2px solid alpha(@border, 0.7);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: transparent;
+}
+
+window .input {
+    background: transparent;
+    color: @text;
+}
+
+window .input placeholder {
+    color: alpha(@text, 0.7);
+    opacity: 1;
+}
+
+window .keybind-hints { background: transparent; }
+
+window .item-text-box { padding: 10px 0; }
+
+window .item-box {
+    padding: 6px 12px;
+    border-radius: 10px;
+    transition: background 150ms ease;
+}
+
+window .item-image { -gtk-icon-size: 18px; margin-right: 10px; }
+window .normal-icons { -gtk-icon-size: 18px; }
+window .large-icons  { -gtk-icon-size: 18px; }
+
+window child:selected {
+    border: 2px solid alpha(@accent, 0.55);
+    border-radius: 10px;
+    background: mix(@accent, @surface, 0.82);
+}
+
+window child:selected .item-box * {
+    color: @selected-text;
+    transition: color 150ms ease;
+}
