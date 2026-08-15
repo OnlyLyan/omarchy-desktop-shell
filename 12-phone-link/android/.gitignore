@@ -1,0 +1,7 @@
+# Artefatos de build: sao gerados por `gradle assembleDebug` e pesam centenas de
+# MB. O que interessa versionar e o codigo e o build.gradle.kts.
+build/
+.gradle/
+app/build/
+# Aponta para o SDK desta maquina, nao serve para mais ninguem.
+local.properties

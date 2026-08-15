@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- dataSync e o tipo certo: a conexao existe para transportar dados para o
+         PC. Sem declarar o tipo, o Android 14+ recusa startForeground. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Obrigatoria para o MulticastLock. Sem a trava o driver de Wi-Fi descarta
+         os broadcasts e a descoberta nunca recebe nada, sem erro nenhum. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Navegar na arvore de arquivos exige isto no Android 11+. Nao existe
+         dialogo para pedir: o dono liga na tela de configuracoes do sistema.
+         tools:ignore porque a Play Store restringe, e este app nao vai pra la. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <application
+        android:label="Phone Link"
+        android:usesCleartextTraffic="false"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".LinkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- BIND_NOTIFICATION_LISTENER_SERVICE tem que ser exigida AQUI: e o
+             sistema que se liga neste servico, e sem a permissao qualquer app
+             poderia se ligar e ler as notificacoes junto. -->
+        <service
+            android:name=".NotifListener"
+            android:exported="true"
+            android:label="Phone Link"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

@@ -37,6 +37,20 @@ def apply_trust(ctx, ca_data):
     # que e inofensivo: quem decide confianca e _registra_identidade, e la o
     # device_id nao consta mais no truststore, entao a sessao fica como nao
     # pareada e so pacotes pair.* passam.
+    # PARTIAL_CHAIN e obrigatorio aqui, nao e otimizacao.
+    #
+    # A confianca deste protocolo e por FINGERPRINT: o certificado do par e ele
+    # mesmo, autoassinado, uma folha. Sem esta flag o OpenSSL exige que toda
+    # ancora de confianca se declare autoridade (basicConstraints CA:TRUE) e
+    # recusa a cadeia, abortando o handshake SEM alerta TLS. Do outro lado isso
+    # chega como "I/O error during system call", que nao diz nada.
+    #
+    # Descoberto em 15/08/2026 com o app Android: o certificado que o
+    # AndroidKeyStore emite nao traz basicConstraints nenhum, entao TODO aparelho
+    # Android era recusado na reconexao, logo depois de parear com sucesso. O
+    # certificado do PC escapava por acidente, porque `openssl req -x509` marca
+    # CA:TRUE por padrao.
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
     ctx.load_verify_locations(cadata=ca_data)
 
 
@@ -121,9 +135,18 @@ class Session:
             log.debug("erro ao fechar sessao com %s: %s", self.address, exc)
 
 
+NOTIF_POST = "notif.post"
+NOTIF_REMOVE = "notif.remove"
+NOTIF_REPLY = "notif.reply"
+NOTIF_REPLY_RESULT = "notif.reply.result"
+FS_LIST = "fs.list"
+FS_LIST_RESULT = "fs.list.result"
+FS_READ = "fs.read"
+FS_READ_RESULT = "fs.read.result"
 PAIR_REQUEST = "pair.request"
 PAIR_ACCEPT = "pair.accept"
 PAIR_REJECT = "pair.reject"
+PAIR_RESULT = "pair.result"
 PING = "phone.ping"
 PONG = "phone.pong"
 
@@ -160,6 +183,7 @@ class Transport:
         self._tarefas = set()
         self._cert_pem = None
         self._pending_pings = {}
+        self._pending_fs = {}
         self._backoff = {}
         self._ultimo_pacote = {}
         self._heartbeat = None
@@ -217,6 +241,36 @@ class Transport:
         """
         if self._server_ctx is not None:
             apply_trust(self._server_ctx, self._trust.ca_data())
+
+    async def _pergunta_fs(self, device_id, tipo, corpo, timeout=20):
+        sessao = self._sessions.get(device_id)
+        if sessao is None or not sessao.paired:
+            return {"error": "aparelho nao conectado"}
+        pacote = protocol.make_packet(tipo, corpo)
+        futuro = asyncio.get_running_loop().create_future()
+        self._pending_fs[pacote["id"]] = futuro
+        await sessao.send(pacote)
+        try:
+            return await asyncio.wait_for(futuro, timeout)
+        except asyncio.TimeoutError:
+            self._pending_fs.pop(pacote["id"], None)
+            return {"error": "o celular nao respondeu a tempo"}
+
+    async def listar_arquivos(self, device_id, caminho):
+        return await self._pergunta_fs(device_id, FS_LIST, {"path": caminho})
+
+    async def ler_arquivo(self, device_id, caminho, offset, tamanho):
+        return await self._pergunta_fs(
+            device_id, FS_READ, {"path": caminho, "offset": offset, "size": tamanho}
+        )
+
+    async def responder_notificacao(self, device_id, key, texto):
+        """Manda o texto de resposta para o aparelho. Devolve False se nao ha sessao."""
+        sessao = self._sessions.get(device_id)
+        if sessao is None or not sessao.paired:
+            return False
+        await sessao.send(protocol.make_packet(NOTIF_REPLY, {"key": key, "text": texto}))
+        return True
 
     def sessions(self):
         return list(self._sessions.values())
@@ -334,6 +388,32 @@ class Transport:
                 await self._on_pair_accept(sessao, packet)
             case _ if tipo == PAIR_REJECT:
                 self._cancela_pendente(sessao.device_id, packet["body"].get("reason", "recusado"))
+            case _ if tipo == NOTIF_POST:
+                # Nao valida campo por campo aqui de proposito: notificacao e
+                # dado de exibicao, nao comando. Campo faltando vira texto vazio
+                # do outro lado; derrubar a sessao por causa de um titulo ausente
+                # seria pior que mostrar a notificacao incompleta.
+                corpo = dict(packet["body"])
+                corpo["device_id"] = sessao.device_id
+                self._emit("notif.post", corpo)
+            case _ if tipo == NOTIF_REMOVE:
+                self._emit("notif.remove", {
+                    "device_id": sessao.device_id,
+                    "key": packet["body"].get("key", ""),
+                })
+            case _ if tipo in (FS_LIST_RESULT, FS_READ_RESULT):
+                # `req` e o id do pedido original. Sem ele, duas leituras em voo
+                # ao mesmo tempo entregariam o pedaco de uma para a outra.
+                futuro = self._pending_fs.pop(packet["body"].get("req"), None)
+                if futuro and not futuro.done():
+                    futuro.set_result(packet["body"])
+            case _ if tipo == NOTIF_REPLY_RESULT:
+                self._emit("notif.reply.result", {
+                    "device_id": sessao.device_id,
+                    "key": packet["body"].get("key", ""),
+                    "ok": bool(packet["body"].get("ok")),
+                    "reason": packet["body"].get("reason", ""),
+                })
             case _ if tipo == PING:
                 await sessao.send(protocol.make_packet(PONG, {"echo_id": packet["id"]}))
             case _ if tipo == PONG:
@@ -577,6 +657,13 @@ class Transport:
         if pendente.timer:
             pendente.timer.cancel()
         del self._pending[device_id]
+        # Avisa o OUTRO LADO tambem. Ate 2026-08-15 o pair.result existia so
+        # como evento de IPC, para a UI local: um cliente de verdade concluia o
+        # pareamento e nunca recebia confirmacao nenhuma, tendo que adivinhar
+        # pelo silencio. A fatia 1 nao expos isso porque nunca teve um peer real.
+        self._spawn(pendente.session.send(
+            protocol.make_packet(PAIR_RESULT, {"paired": True})
+        ))
         self._emit("pair.result", {"device_id": device_id, "accepted": True})
         self._emit("device.state", {
             "device_id": device_id, "state": "connected", "paired": True,

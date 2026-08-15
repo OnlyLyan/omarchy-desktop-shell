@@ -1,0 +1,133 @@
+#!/bin/bash
+# fone | conecta o Fuxi-H3 e manda o audio pra ele.
+#
+# POR QUE ELE VIVIA "NAO CONECTANDO"
+#
+# Duas causas, as duas encontradas em 2026-08-15 com captura de HCI:
+#
+# 1. O pareamento nunca gravava link key. A versao antiga chamava
+#    `bluetoothctl pair MAC` como comando SOLTO. Comando solto do bluetoothctl
+#    nao registra agente, e sem agente a negociacao SSP fecha sem bonding:
+#    ficava `Paired: yes / Bonded: no` e nenhuma secao [LinkKey] em
+#    /var/lib/bluetooth. Toda queda exigia parear de novo.
+#    Refazendo o mesmo pareamento DENTRO de uma sessao com
+#    `agent NoInputNoOutput` + `default-agent`, fechou com `Bonded: yes` e a
+#    chave foi gravada em disco na primeira tentativa.
+#
+#    A nota antiga do vault dizia que era preciso um segundo ciclo
+#    disconnect+connect para forcar o bond. Nao e: o que faltava era o agente.
+#
+# 2. Dual boot com Windows. Ao parear no Windows, o fone guarda uma chave NOVA
+#    para o mesmo endereco e a chave gravada aqui vira lixo. Com o padrao
+#    `JustWorksRepairing = never` o BlueZ RECUSA o repareamento calado. Isso
+#    esta corrigido em /etc/bluetooth/main.conf, fora deste script.
+#
+# Uso:
+#   fone            conecta e roteia o audio
+#   fone parear     forca o ciclo completo de pareamento
+#   fone status     so mostra o estado
+#   fone off        desconecta
+set -uo pipefail
+
+MAC=01:92:25:15:29:CD
+SINK_PREFIX='bluez_output.01_92_25_15_29_CD'
+
+is_connected(){ bluetoothctl info "$MAC" 2>/dev/null | grep -q 'Connected: yes'; }
+is_bonded(){    bluetoothctl info "$MAC" 2>/dev/null | grep -q 'Bonded: yes'; }
+
+# index() em vez de regex: o nome tem pontos, e escapa-los faz o awk reclamar
+sink_name(){ pactl list sinks short 2>/dev/null | awk -v p="$SINK_PREFIX" 'index($2,p)==1 {print $2; exit}'; }
+
+rotear(){
+  local s; s=$(sink_name)
+  [ -z "$s" ] && return 1
+  pactl set-default-sink "$s" >/dev/null 2>&1
+  pactl set-sink-mute "$s" 0 >/dev/null 2>&1
+  # leva junto o que ja estiver tocando
+  pactl list sink-inputs short 2>/dev/null | while read -r id _; do
+    [ -n "$id" ] && pactl move-sink-input "$id" "$s" >/dev/null 2>&1
+  done
+  echo "  audio roteado -> $s"
+}
+
+# Sessao interativa e obrigatoria: o agente so existe enquanto o bluetoothctl
+# roda. As pausas nao sao superstição, cada comando depende do anterior ter
+# terminado (o scan precisa achar, o pair precisa do scan, o connect do pair).
+parear(){
+  echo "  pareando com agente registrado..."
+  {
+    echo "power on";                sleep 1
+    echo "agent NoInputNoOutput";   sleep 1
+    echo "default-agent";           sleep 1
+    echo "scan on";                 sleep 6
+    echo "pair $MAC";               sleep 12
+    echo "trust $MAC";              sleep 2
+    echo "connect $MAC";            sleep 6
+    echo "scan off";                sleep 1
+    echo "quit"
+  } | timeout 60 bluetoothctl >/dev/null 2>&1
+}
+
+case "${1:-conectar}" in
+  status)
+    bluetoothctl info "$MAC" 2>/dev/null | grep -iE 'Name:|Paired:|Bonded:|Trusted:|Connected:' || echo "  dispositivo desconhecido"
+    if sudo -n test -f "/var/lib/bluetooth/$(bluetoothctl list | awk '{print $2; exit}')/$MAC/info" 2>/dev/null; then
+      sudo -n grep -q "LinkKey" "/var/lib/bluetooth/$(bluetoothctl list | awk '{print $2; exit}')/$MAC/info" 2>/dev/null \
+        && echo "  link key: gravada" || echo "  link key: AUSENTE (bond falso)"
+    fi
+    s=$(sink_name); echo "  sink: ${s:-nenhum}"
+    echo "  padrao: $(pactl get-default-sink 2>/dev/null)"
+    exit 0 ;;
+  off)
+    bluetoothctl disconnect "$MAC" >/dev/null 2>&1 && echo "desconectado" || echo "nao estava conectado"
+    exit 0 ;;
+  parear)
+    bluetoothctl remove "$MAC" >/dev/null 2>&1
+    sleep 1
+    parear
+    bluetoothctl info "$MAC" 2>/dev/null | grep -E "Paired|Bonded|Connected"
+    exit 0 ;;
+esac
+
+echo "Fuxi-H3: conectando..."
+
+# 1) ja esta conectado? so garante o roteamento
+if is_connected; then
+  echo "  ja conectado"
+  rotear || echo "  AVISO: sink nao apareceu ainda"
+  exit 0
+fi
+
+# 2) tentativa barata: connect direto. Com bond real isto resolve quase sempre,
+#    e e o caminho que passou a funcionar depois da correcao do agente.
+if timeout 20 bluetoothctl connect "$MAC" >/dev/null 2>&1 && sleep 3 && is_connected; then
+  echo "  conectado"
+  for i in 1 2 3 4 5; do rotear && break; sleep 1; done
+  exit 0
+fi
+
+# 3) connect falhou. Se o bond existe, o fone esta desligado ou preso em outro
+#    aparelho: parear de novo nao ajuda e ainda apaga a chave boa.
+if is_bonded; then
+  echo "  ERRO: nao conectou, mas o pareamento esta intacto (Bonded: yes)."
+  echo "        O fone provavelmente esta desligado, sem bateria, ou conectado"
+  echo "        no celular. Desconecta de la e roda 'fone' de novo."
+  echo "        Se quiser mesmo refazer o pareamento: fone parear"
+  exit 1
+fi
+
+# 4) sem bond: aí sim o ciclo completo vale a pena
+echo "  sem bond gravado, refazendo o pareamento"
+bluetoothctl remove "$MAC" >/dev/null 2>&1
+sleep 1
+parear
+
+if is_connected; then
+  echo "  conectado"
+  is_bonded && echo "  bond real gravado" || echo "  AVISO: conectou mas sem bond, vai cair de novo"
+  for i in 1 2 3 4 5; do rotear && break; sleep 1; done
+else
+  echo "  ERRO: nao conectou. Confere se o fone esta ligado, com bateria, e nao"
+  echo "        esta preso no celular ou no Windows."
+  exit 1
+fi

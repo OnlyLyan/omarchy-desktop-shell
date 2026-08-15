@@ -1,0 +1,17 @@
+[Unit]
+Description=Rede de seguranca de conexao do fone Fuxi-H3
+# Depende do bluetoothd estar no ar; sem isto o servico sobe antes e passa os
+# primeiros ciclos falhando a toa no boot.
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fone-vigia
+Restart=always
+RestartSec=10
+# nao pode competir por CPU com jogo nem com audio
+Nice=10
+
+[Install]
+WantedBy=default.target

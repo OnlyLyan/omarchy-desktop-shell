@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import base64
 import sys
 import uuid
 from pathlib import Path
@@ -106,8 +107,56 @@ def imprime_lista(devices):
         print(f"{d['name']:<{largura}}  {d['device_id']}  {estado}  {confianca}  {endereco}")
 
 
+async def comando_fs(caminho, args):
+    if args.acao == "ls":
+        r = await pergunta(caminho, "fs.list", {"path": args.caminho})
+        corpo = r["body"]
+        if corpo.get("error"):
+            print(f"phonectl: {corpo['error']}", file=sys.stderr)
+            if corpo.get("limitado"):
+                print("        abra o app no celular e toque em "
+                      "'Liberar acesso aos arquivos'", file=sys.stderr)
+            return 1
+        print(corpo.get("path", args.caminho))
+        for e in corpo.get("entries", []):
+            marca = "/" if e["dir"] else " "
+            tam = "" if e["dir"] else f"{e['size']:>12,}".replace(",", ".")
+            print(f"  {marca} {e['name']:<44} {tam}")
+        return 0
+
+    # pull: baixa em pedacos. Um arquivo de 200 MB nao cabe num pacote, e o
+    # protocolo corta a linha em 1 MiB, entao o download e um laco de leituras.
+    destino = Path(args.destino) if args.destino else Path(args.caminho).name
+    if destino.is_dir():
+        destino = destino / Path(args.caminho).name
+    offset, total = 0, None
+    with open(destino, "wb") as saida:
+        while True:
+            r = await pergunta(caminho, "fs.read",
+                               {"path": args.caminho, "offset": offset, "size": 196608})
+            corpo = r["body"]
+            if corpo.get("error"):
+                print(f"phonectl: {corpo['error']}", file=sys.stderr)
+                return 1
+            total = corpo.get("total", total)
+            pedaco = base64.b64decode(corpo.get("data") or "")
+            saida.write(pedaco)
+            offset += len(pedaco)
+            if total:
+                pct = offset * 100 // max(total, 1)
+                print(f"\r  {offset:,} de {total:,} bytes ({pct}%)".replace(",", "."),
+                      end="", file=sys.stderr)
+            if corpo.get("eof") or not pedaco:
+                break
+    print(f"\n{destino}", file=sys.stderr)
+    return 0
+
+
 async def executa(args):
     caminho = Path(args.socket) if args.socket else caminho_padrao()
+
+    if args.comando == "fs":
+        return await comando_fs(caminho, args)
 
     if args.comando == "watch":
         await observa(caminho)
@@ -122,6 +171,11 @@ async def executa(args):
         "unpair": ("unpair", {"device_id": getattr(args, "device_id", None)}),
         "ping": ("ping", {"device_id": getattr(args, "device_id", None)}),
         "connect": ("connect", {"host": getattr(args, "host", None), "port": args.port}),
+        "reply": ("reply", {
+            "key": getattr(args, "key", None),
+            "text": getattr(args, "text", None),
+            "device_id": getattr(args, "device_id", None),
+        }),
     }
     tipo, corpo = pedidos[args.comando]
     resposta = await pergunta(caminho, tipo, corpo)
@@ -167,6 +221,20 @@ def main(argv=None):
     p = sub.add_parser("confirm", help="confirma ou recusa um pareamento pendente")
     p.add_argument("device_id")
     p.add_argument("--reject", action="store_true", help="recusa em vez de aceitar")
+
+    p = sub.add_parser("fs", help="navega e baixa arquivos do celular")
+    fsub = p.add_subparsers(dest="acao", required=True)
+    q = fsub.add_parser("ls", help="lista uma pasta")
+    q.add_argument("caminho", nargs="?", default="/", help="padrao: raiz do armazenamento")
+    q = fsub.add_parser("pull", help="baixa um arquivo")
+    q.add_argument("caminho")
+    q.add_argument("destino", nargs="?", default=None)
+
+    p = sub.add_parser("reply", help="responde uma notificacao do celular")
+    p.add_argument("key", help="chave da notificacao (vem no hint x-phonelink-key)")
+    p.add_argument("text", help="texto da resposta")
+    p.add_argument("--device-id", default=None,
+                   help="so precisa com mais de um aparelho pareado")
 
     p = sub.add_parser("connect", help="conecta manualmente, para redes sem broadcast")
     p.add_argument("host")

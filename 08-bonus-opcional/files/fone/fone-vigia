@@ -1,0 +1,87 @@
+#!/bin/bash
+# fone-vigia | rede de seguranca do Fuxi-H3.
+#
+# Com bond real gravado o proprio fone reconecta ao ligar, e na maior parte das
+# vezes este servico nao faz nada. Ele existe para os casos em que o fone NAO
+# toma a iniciativa: depois de suspender o PC, depois de voltar do celular, ou
+# quando ele liga antes do adaptador estar pronto.
+#
+# Por que 45s e nao 5s: cada tentativa de conexao com o fone desligado faz o
+# adaptador PAGINAR o endereco por varios segundos, no mesmo 2.4 GHz do Wi-Fi.
+# Tentar de 5 em 5 segundos o dia inteiro estraga a rede para ganhar quase nada.
+#
+# Por que nao usar scan: scan continuo e MUITO mais caro em radio que um page
+# direto, e a informacao que ele traria (o fone esta por perto) e exatamente o
+# que a tentativa de conexao ja responde.
+
+set -uo pipefail
+
+MAC=01:92:25:15:29:CD
+SINK_PREFIX='bluez_output.01_92_25_15_29_CD'
+INTERVALO=45
+# Depois de muitas falhas seguidas o fone provavelmente esta guardado ou sem
+# bateria. Espacar evita ficar paginando o dia inteiro a toa.
+INTERVALO_LONGO=180
+FALHAS_PARA_ESPACAR=10
+
+is_connected(){ bluetoothctl info "$MAC" 2>/dev/null | grep -q 'Connected: yes'; }
+is_bonded(){    bluetoothctl info "$MAC" 2>/dev/null | grep -q 'Bonded: yes'; }
+sink_name(){ pactl list sinks short 2>/dev/null | awk -v p="$SINK_PREFIX" 'index($2,p)==1 {print $2; exit}'; }
+
+rotear_se_preciso(){
+  local s atual
+  s=$(sink_name); [ -z "$s" ] && return 0
+  atual=$(pactl get-default-sink 2>/dev/null)
+  # so mexe se ainda nao for o padrao: reescrever a cada volta do laco roubaria
+  # o audio dele caso tenha escolhido outra saida de proposito
+  [ "$atual" = "$s" ] && return 0
+  pactl set-default-sink "$s" >/dev/null 2>&1
+  pactl list sink-inputs short 2>/dev/null | while read -r id _; do
+    [ -n "$id" ] && pactl move-sink-input "$id" "$s" >/dev/null 2>&1
+  done
+  echo "audio roteado para $s"
+}
+
+falhas=0
+avisou_bond=0
+while :; do
+  if is_connected; then
+    falhas=0
+    rotear_se_preciso
+    sleep "$INTERVALO"
+    continue
+  fi
+
+  # Sem bond nao adianta tentar conectar: o pareamento tem que ser refeito, e
+  # isso e decisao do dono, nao de um servico em segundo plano. Avisa e espera.
+  if ! is_bonded; then
+    echo "sem bond gravado; rode 'fone parear' com o fone em modo de pareamento"
+    # Avisa na tela UMA vez por perda de bond. O historico deste fone e falhar
+    # em silencio e ele so descobrir na hora que quer ouvir algo; com o aviso
+    # ele sabe na hora o que aconteceu e o que fazer.
+    if [ "$avisou_bond" = "0" ]; then
+      notify-send -a "Fone" -u normal \
+        -i /usr/share/icons/Yaru/48x48/devices/audio-headphones.png \
+        "Fone perdeu o pareamento" \
+        "A chave foi invalidada, provavelmente por pareamento no Windows. Rode: fone parear" 2>/dev/null
+      avisou_bond=1
+    fi
+    sleep "$INTERVALO_LONGO"
+    continue
+  fi
+  avisou_bond=0
+
+  if timeout 20 bluetoothctl connect "$MAC" >/dev/null 2>&1 && sleep 2 && is_connected; then
+    echo "reconectado"
+    falhas=0
+    rotear_se_preciso
+    sleep "$INTERVALO"
+  else
+    falhas=$((falhas + 1))
+    if [ "$falhas" -ge "$FALHAS_PARA_ESPACAR" ]; then
+      sleep "$INTERVALO_LONGO"
+    else
+      sleep "$INTERVALO"
+    fi
+  fi
+done
