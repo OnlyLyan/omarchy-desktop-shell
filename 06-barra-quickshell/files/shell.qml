@@ -21,6 +21,7 @@ ShellRoot {
     // especial: a v1 hibernava o processo com SIGSTOP e matou uma sessao viva
     // do Claude Code dentro do kitty.
     GavetaPanel { id: gaveta; theme: theme }
+    CalendarPanel { id: calendario; theme: theme }
     // notificacao propria, substitui o mako (NotificationPanel.qml)
     NotificationPanel { id: notifPanel; theme: theme }
 
@@ -240,7 +241,8 @@ ShellRoot {
         id: monPendingTimer; interval: 1000; repeat: true; running: root.monPending > 0
         onTriggered: { root.monPending--; }  // cosmetico; o revert real e do watchdog
     }
-    Component.onCompleted: { monPendingProc.running = true; root.refreshNotifs(); }
+    Component.onCompleted: { monPendingProc.running = true; root.refreshNotifs();
+                             netHistProc.running = true; }
 
     PanelWindow {
         visible: root.monPending > 0
@@ -326,6 +328,139 @@ ShellRoot {
     }
     Timer { interval: 5000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: netProc.running = true }
+
+    // ---- medicao de internet (net-medir.sh): latencia, dns e teste sob demanda ----
+    // O indicador da barra e SO o ms, decisao dele. As tres pernas (roteador,
+    // internet, dns) aparecem no dropdown, porque e o trio que separa a culpa.
+    // O dns esta aqui por causa do incidente de 14/08: naquele dia ping e
+    // velocidade estavam perfeitos e a internet estava inutilizavel, entao um
+    // indicador sem dns teria mostrado tudo verde durante o problema.
+    QtObject {
+        id: net
+        property int gw: -1        // ms ate o roteador
+        property int inet: -1      // ms ate 1.1.1.1
+        property int dns: -1       // ms para resolver um dominio real
+        property bool testando: false
+        property var hist: []      // [{t, down, up}], no maximo 3
+    }
+    Process {
+        id: netLatProc
+        command: [lar + "/.config/quickshell/scripts/net-medir.sh", "lat"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var p = this.text.trim().split(" ");
+                net.gw = parseInt(p[0]);
+                net.inet = parseInt(p[1]);
+                root.netAvaliar();
+            }
+        }
+    }
+    Process {
+        id: netDnsProc
+        command: [lar + "/.config/quickshell/scripts/net-medir.sh", "dns"]
+        stdout: StdioCollector { onStreamFinished: net.dns = parseInt(this.text.trim()) }
+    }
+    Process {
+        id: netHistProc
+        command: [lar + "/.config/quickshell/scripts/net-medir.sh", "historico"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { net.hist = JSON.parse(this.text.trim()) || []; }
+                catch (e) { net.hist = []; }
+            }
+        }
+    }
+    Process {
+        id: netSpeedProc
+        command: [lar + "/.config/quickshell/scripts/net-medir.sh", "speed"]
+        // le o historico DEPOIS de terminar: o proprio script grava o resultado,
+        // entao reler e o jeito de a lista aparecer sem duplicar a logica aqui
+        onExited: { net.testando = false; netHistProc.running = true; }
+    }
+    // "18:05" se foi hoje, "14/08" se foi antes. Dia inteiro no historico de 3
+    // itens seria informacao demais para a largura que o dropdown tem.
+    function netQuando(ts) {
+        var d = new Date(ts * 1000);
+        var hoje = new Date();
+        if (d.toDateString() === hoje.toDateString())
+            return Qt.formatDateTime(d, "HH:mm");
+        return Qt.formatDateTime(d, "dd/MM");
+    }
+    // ---- vigilancia: avisa quando a internet cai ou fica instavel ----
+    //
+    // Duas regras existem so pra isso NAO virar spam:
+    //  1. avisa apenas na TROCA de estado, nunca repete o mesmo aviso
+    //  2. exige duas amostras seguidas concordando (~10s) antes de trocar
+    // Sem a segunda, um unico pacote perdido durante um jogo ja dispararia
+    // "internet caiu" e ele desligaria o recurso no primeiro dia.
+    QtObject {
+        id: netVig
+        property string estado: "ok"        // "ok" | "instavel" | "caiu"
+        property string candidato: "ok"
+        property int votos: 0
+        property int amostras: 0            // descarta a largada, quando tudo ainda e -1
+    }
+
+    function netAvaliar() {
+        netVig.amostras++;
+        if (netVig.amostras < 2) return;    // na primeira leitura os valores ainda sao -1
+
+        var novo = "ok";
+        if (net.inet < 0) novo = "caiu";
+        // 150ms e o teto util da escala da barra; dns acima de 500ms ja trava
+        // pagina de forma perceptivel, e dns em -1 e falha de resolucao.
+        else if (net.inet > 150 || net.dns < 0 || net.dns > 500) novo = "instavel";
+
+        if (novo === netVig.estado) { netVig.votos = 0; netVig.candidato = novo; return; }
+        if (novo !== netVig.candidato) { netVig.candidato = novo; netVig.votos = 1; return; }
+        netVig.votos++;
+        if (netVig.votos < 2) return;
+
+        netVig.estado = novo;
+        netVig.votos = 0;
+        netAvisar(novo);
+    }
+
+    function netAvisar(estado) {
+        var titulo, corpo, icone;
+        if (estado === "caiu") {
+            titulo = "Internet caiu";
+            corpo = sys.net === "off" ? "sem rede conectada"
+                                      : "o roteador responde, a internet nao";
+            icone = "/usr/share/icons/Yaru/22x22/panel/network-offline.svg";
+        } else if (estado === "instavel") {
+            // diz QUAL perna piorou: sem isso o aviso nao ajuda a decidir se e o
+            // wifi da casa, o provedor, ou o dns.
+            var causas = [];
+            if (net.inet > 150) causas.push("latencia " + net.inet + "ms");
+            if (net.dns < 0) causas.push("dns falhando");
+            else if (net.dns > 500) causas.push("dns " + net.dns + "ms");
+            titulo = "Internet instável";
+            corpo = causas.join(", ");
+            icone = "/usr/share/icons/Yaru/22x22/panel/network-error.svg";
+        } else {
+            titulo = "Internet normalizou";
+            corpo = net.inet + "ms, dns " + net.dns + "ms";
+            icone = "/usr/share/icons/Yaru/22x22/panel/network-idle.svg";
+        }
+        // urgencia normal de proposito: critica nao expira sozinha no nosso
+        // painel, e uma pilula presa na tela durante um jogo seria pior que o
+        // proprio problema que ela anuncia.
+        Quickshell.execDetached(["notify-send", "-a", "Internet", "-u", "normal",
+                                 "-i", icone, titulo, corpo]);
+    }
+
+    function testarVelocidade() {
+        if (net.testando) return;   // dois testes juntos disputam a banda e mentem
+        net.testando = true;
+        netSpeedProc.running = true;
+    }
+    // 5s na latencia (2 pings, custo nenhum) e 30s no dns (1 consulta).
+    // O teste de velocidade NUNCA entra em timer: gasta banda e atrapalha jogo.
+    Timer { interval: 5000;  running: true; repeat: true; triggeredOnStart: true
+            onTriggered: netLatProc.running = true }
+    Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: netDnsProc.running = true }
 
     // ---- WiFi (iwd via wifi.sh): lista estavel + estado + acoes na barra ----
     property var wifiNets: []
@@ -478,9 +613,25 @@ ShellRoot {
     }
     Process {
         id: omupProc
+        // NAO usa `omarchy-update-available`: ele compara TAGS, e a tag mais nova
+        // do repo e a do Quattro (v4.0.0-beta3, que o `sort -V` ainda joga na
+        // frente do v4.0.0). Quem esta no 3.x nunca casa, entao o icone ficava
+        // aceso pra sempre mesmo com a maquina 100% atualizada. Medido em
+        // 2026-08-14: master em 3.8.5, zero migrations pendentes, icone aceso.
+        //
+        // Aqui a pergunta e outra e e a certa: existe commit novo na MINHA
+        // branch? Compara o HEAD local com o remoto por ls-remote, sem fetch.
+        // Sem rede ou fora de repo, sai != 0 e o icone continua apagado, que e
+        // melhor que mentir dizendo que ha atualizacao.
         command: ["sh", "-c",
             "export OMARCHY_PATH=\"${OMARCHY_PATH:-$HOME/.local/share/omarchy}\"; " +
-            "PATH=\"$OMARCHY_PATH/bin:$PATH\" omarchy-update-available"]
+            "cd \"$OMARCHY_PATH\" || exit 1; " +
+            "br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 1; " +
+            "loc=$(git rev-parse HEAD 2>/dev/null) || exit 1; " +
+            "rem=$(GIT_TERMINAL_PROMPT=0 timeout 20 git ls-remote origin \"refs/heads/$br\" 2>/dev/null | awk '{print $1}'); " +
+            "[ -n \"$rem\" ] || exit 1; " +
+            "[ \"$loc\" != \"$rem\" ] || exit 1; " +
+            "echo \"Omarchy update available ($(echo \"$rem\" | cut -c1-7))\"; exit 0"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var m = this.text.match(/\(([^)]+)\)/);
@@ -878,6 +1029,10 @@ ShellRoot {
         target: "ac"
         function open(view: string): void {
             root.acScreen = Quickshell.screens[0];
+            // o clique na linha "Personalizacao" chama refreshThemes() antes de
+            // trocar a view (linha 2439); por IPC isso nao acontecia e a aba abria
+            // com o grid de temas VAZIO. Mesmo caminho pros dois.
+            if (view === "perso") root.refreshThemes();
             if (view) card.view = view;
             root.acOpen = true;
         }
@@ -1907,12 +2062,21 @@ ShellRoot {
                     }
                 }
 
-                // relogio
+                // relogio: clique abre o calendario, estilo Windows 11
                 Text {
+                    id: relogioTxt
                     Layout.alignment: Qt.AlignVCenter
-                    color: theme.fg
+                    color: relogioHov.hovered ? theme.accent : theme.fg
                     font.pixelSize: 13
                     text: clock.date.toLocaleString(Qt.locale("pt_BR"), "ddd dd/MM  HH:mm")
+                    HoverHandler { id: relogioHov }
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: calendario.aberto ? calendario.fechar()
+                                                     : calendario.abrir(bar.screen)
+                    }
                 }
                 }
             }
@@ -2495,117 +2659,250 @@ ShellRoot {
                     }
                 }
 
+                // ---- medicao da conexao ----
+                // Mora aqui, e nao num dropdown proprio na barra, porque esta
+                // tela so tinha a lista de redes e sobrava espaco morto embaixo.
+                //
+                // Tres pernas de proposito, e cada uma acusa um trecho diferente:
+                // roteador alto = wifi da casa, roteador bom com internet alta =
+                // provedor, dns alto = resolucao de nome. Em 14/08 a internet
+                // ficou inutilizavel com ping em 46ms e download a 15 MB/s: o
+                // quebrado era so o dns, e sem essa terceira linha o painel teria
+                // mostrado tudo verde durante o problema inteiro.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    implicitHeight: 1
+                    color: Qt.alpha(theme.fgDim, 0.25)
+                }
+
+                Text {
+                    text: "Conexão"
+                    color: theme.fgDim
+                    font.pixelSize: 11
+                    font.bold: true
+                    Layout.topMargin: 2
+                }
+
                 Repeater {
-                    model: root.wifiNets
-                    delegate: Rectangle {
-                        id: netRow
+                    model: [
+                        { rot: "Roteador", val: net.gw,   teto: 20  },
+                        { rot: "Internet", val: net.inet, teto: 150 },
+                        { rot: "DNS",      val: net.dns,  teto: 300 }
+                    ]
+                    delegate: RowLayout {
                         required property var modelData
                         Layout.fillWidth: true
-                        implicitHeight: rowCol.implicitHeight + 8; radius: 8
-                        // hover e realce neutro; accent fica so pra conexao real (tema A)
-                        color: modelData.conn ? Qt.alpha(theme.accent, 0.13)
-                               : (netRowMa.containsMouse ? theme.surface2 : "transparent")
-
-                        ColumnLayout {
-                            id: rowCol
-                            anchors { left: parent.left; right: parent.right; top: parent.top }
-                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 4
-                            spacing: 6
-
-                            // linha principal (clicavel)
-                            Item {
-                                Layout.fillWidth: true
-                                implicitHeight: 28
-                                RowLayout {
-                                    anchors.fill: parent
-                                    spacing: 8
-                                    Text {
-                                        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
-                                        text: netRow.modelData.sig >= 4 ? "󰤨" : (netRow.modelData.sig === 3 ? "󰤥"
-                                              : (netRow.modelData.sig === 2 ? "󰤢" : (netRow.modelData.sig >= 1 ? "󰤟" : "󰤯")))
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
-                                        text: netRow.modelData.name
-                                    }
-                                    Text {
-                                        visible: netRow.modelData.sec !== "open"
-                                        text: "󰌾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11; color: theme.fgDim
-                                    }
-                                    Text {
-                                        visible: netRow.modelData.conn
-                                        color: theme.ok; font.pixelSize: 10
-                                        text: "conectado"
-                                    }
-                                }
-                                MouseArea {
-                                    id: netRowMa
-                                    anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: function (mouse) {
-                                        if (mouse.button === Qt.RightButton) {
-                                            var pt = netRowMa.mapToItem(card, mouse.x, mouse.y);
-                                            wifiCol.wifiMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
-                                            wifiCol.wifiMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
-                                            wifiCol.wifiMenuData = { conn: netRow.modelData.conn, known: netRow.modelData.known,
-                                                                     sec: netRow.modelData.sec, name: netRow.modelData.name };
-                                            wifiCol.wifiShowDetails = false;
-                                            wifiCol.wifiMenuFor = netRow.modelData.name;
-                                            return;
-                                        }
-                                        // esquerda: conecta direto (ou abre senha em rede nova protegida)
-                                        if (netRow.modelData.conn) return;
-                                        if (netRow.modelData.known || netRow.modelData.sec === "open")
-                                            root.wifiCmd(["connect", netRow.modelData.name]);
-                                        else
-                                            wifiCol.wifiSel = (wifiCol.wifiSel === netRow.modelData.name ? "" : netRow.modelData.name);
-                                    }
-                                }
-                            }
-
-                            // expansao: senha (rede nova protegida) OU acoes (conectada/conhecida)
-                            ColumnLayout {
-                                visible: wifiCol.wifiSel === netRow.modelData.name
-                                Layout.fillWidth: true; spacing: 6
-
-                                RowLayout {
-                                    visible: !netRow.modelData.conn && !netRow.modelData.known && netRow.modelData.sec !== "open"
-                                    Layout.fillWidth: true; spacing: 6
-                                    Rectangle {
-                                        Layout.fillWidth: true; implicitHeight: 30; radius: 6
-                                        color: theme.bgAlt; border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
-                                        TextInput {
-                                            id: pwInput
-                                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            color: theme.fg; font.pixelSize: 12
-                                            echoMode: TextInput.Password; clip: true
-                                            focus: wifiCol.wifiSel === netRow.modelData.name
-                                            onVisibleChanged: if (visible) forceActiveFocus()
-                                            onAccepted: { root.wifiCmd(["connect", netRow.modelData.name, text]); wifiCol.wifiSel = ""; }
-                                        }
-                                    }
-                                    Rectangle {
-                                        implicitWidth: 76; implicitHeight: 30; radius: 6; color: theme.accent
-                                        Text { anchors.centerIn: parent; text: "Conectar"; color: theme.bg; font.pixelSize: 11; font.bold: true }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                            onClicked: { root.wifiCmd(["connect", netRow.modelData.name, pwInput.text]); wifiCol.wifiSel = ""; } }
-                                    }
-                                }
-
-                            }
+                        spacing: 6
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.rot
+                            color: theme.fg
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            text: modelData.val < 0 ? "falhou" : modelData.val + " ms"
+                            color: root.corCarga(modelData.val < 0 ? 1
+                                   : Math.max(0, Math.min(1, modelData.val / modelData.teto)))
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 12
                         }
                     }
                 }
 
-                Text {
-                    visible: root.wifiNets.length === 0
+                // Teste de velocidade: SO no clique. Baixa 25 MB e envia 10 MB,
+                // entao rodar sozinho de tempos em tempos gastaria a franquia dele
+                // e atrapalharia jogo em andamento.
+                Rectangle {
                     Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    color: theme.fgDim; font.pixelSize: 11
-                    text: "Procurando redes…"
+                    Layout.topMargin: 6
+                    implicitHeight: 30
+                    radius: 8
+                    color: net.testando ? Qt.alpha(theme.accent, 0.35)
+                         : (btnVelHov.hovered ? Qt.alpha(theme.accent, 0.22) : theme.surface2)
+                    HoverHandler { id: btnVelHov }
+                    Text {
+                        anchors.centerIn: parent
+                        text: net.testando ? "testando…" : "Testar velocidade"
+                        color: theme.fg
+                        font.pixelSize: 12
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !net.testando
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.testarVelocidade()
+                    }
+                }
+
+                Text {
+                    text: "Últimos testes"
+                    color: theme.fgDim
+                    font.pixelSize: 11
+                    font.bold: true
+                    Layout.topMargin: 4
+                }
+                Text {
+                    visible: net.hist.length === 0
+                    text: "nenhum ainda"
+                    color: theme.fgDim
+                    font.pixelSize: 11
+                }
+                Repeater {
+                    model: net.hist
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: root.netQuando(modelData.t)
+                            color: theme.fgDim
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 11
+                        }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            text: modelData.down < 0 ? "falhou" : modelData.down + " Mb \u2193"
+                            color: theme.fg
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            visible: modelData.up >= 0
+                            text: modelData.up + " Mb \u2191"
+                            color: theme.fgDim
+                            font.family: "JetBrainsMono Nerd Font"
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+                // Lista rolavel com teto de altura. Com 13 redes por perto a
+                // coluna passava da altura do card e o bloco de conexao ia
+                // desenhar POR CIMA da barra, fora do painel.
+                Flickable {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(redesCol.implicitHeight, 250)
+                    contentHeight: redesCol.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    ColumnLayout {
+                        id: redesCol
+                        width: parent.width
+                        spacing: 8
+                        Repeater {
+                            model: root.wifiNets
+                            delegate: Rectangle {
+                                id: netRow
+                                required property var modelData
+                                Layout.fillWidth: true
+                                implicitHeight: rowCol.implicitHeight + 8; radius: 8
+                                // hover e realce neutro; accent fica so pra conexao real (tema A)
+                                color: modelData.conn ? Qt.alpha(theme.accent, 0.13)
+                                       : (netRowMa.containsMouse ? theme.surface2 : "transparent")
+
+                                ColumnLayout {
+                                    id: rowCol
+                                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 4
+                                    spacing: 6
+
+                                    // linha principal (clicavel)
+                                    Item {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 28
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            spacing: 8
+                                            Text {
+                                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15; color: theme.accent
+                                                text: netRow.modelData.sig >= 4 ? "󰤨" : (netRow.modelData.sig === 3 ? "󰤥"
+                                                      : (netRow.modelData.sig === 2 ? "󰤢" : (netRow.modelData.sig >= 1 ? "󰤟" : "󰤯")))
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                color: theme.fg; font.pixelSize: 12; elide: Text.ElideRight
+                                                text: netRow.modelData.name
+                                            }
+                                            Text {
+                                                visible: netRow.modelData.sec !== "open"
+                                                text: "󰌾"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 11; color: theme.fgDim
+                                            }
+                                            Text {
+                                                visible: netRow.modelData.conn
+                                                color: theme.ok; font.pixelSize: 10
+                                                text: "conectado"
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: netRowMa
+                                            anchors.fill: parent; hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                            onClicked: function (mouse) {
+                                                if (mouse.button === Qt.RightButton) {
+                                                    var pt = netRowMa.mapToItem(card, mouse.x, mouse.y);
+                                                    wifiCol.wifiMenuX = Math.max(8, Math.min(pt.x, card.width - 186));
+                                                    wifiCol.wifiMenuY = Math.max(8, Math.min(pt.y, card.height - 60));
+                                                    wifiCol.wifiMenuData = { conn: netRow.modelData.conn, known: netRow.modelData.known,
+                                                                             sec: netRow.modelData.sec, name: netRow.modelData.name };
+                                                    wifiCol.wifiShowDetails = false;
+                                                    wifiCol.wifiMenuFor = netRow.modelData.name;
+                                                    return;
+                                                }
+                                                // esquerda: conecta direto (ou abre senha em rede nova protegida)
+                                                if (netRow.modelData.conn) return;
+                                                if (netRow.modelData.known || netRow.modelData.sec === "open")
+                                                    root.wifiCmd(["connect", netRow.modelData.name]);
+                                                else
+                                                    wifiCol.wifiSel = (wifiCol.wifiSel === netRow.modelData.name ? "" : netRow.modelData.name);
+                                            }
+                                        }
+                                    }
+
+                                    // expansao: senha (rede nova protegida) OU acoes (conectada/conhecida)
+                                    ColumnLayout {
+                                        visible: wifiCol.wifiSel === netRow.modelData.name
+                                        Layout.fillWidth: true; spacing: 6
+
+                                        RowLayout {
+                                            visible: !netRow.modelData.conn && !netRow.modelData.known && netRow.modelData.sec !== "open"
+                                            Layout.fillWidth: true; spacing: 6
+                                            Rectangle {
+                                                Layout.fillWidth: true; implicitHeight: 30; radius: 6
+                                                color: theme.bgAlt; border.color: Qt.alpha(theme.accent, 0.3); border.width: 1
+                                                TextInput {
+                                                    id: pwInput
+                                                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                                                    verticalAlignment: TextInput.AlignVCenter
+                                                    color: theme.fg; font.pixelSize: 12
+                                                    echoMode: TextInput.Password; clip: true
+                                                    focus: wifiCol.wifiSel === netRow.modelData.name
+                                                    onVisibleChanged: if (visible) forceActiveFocus()
+                                                    onAccepted: { root.wifiCmd(["connect", netRow.modelData.name, text]); wifiCol.wifiSel = ""; }
+                                                }
+                                            }
+                                            Rectangle {
+                                                implicitWidth: 76; implicitHeight: 30; radius: 6; color: theme.accent
+                                                Text { anchors.centerIn: parent; text: "Conectar"; color: theme.bg; font.pixelSize: 11; font.bold: true }
+                                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                    onClicked: { root.wifiCmd(["connect", netRow.modelData.name, pwInput.text]); wifiCol.wifiSel = ""; } }
+                                            }
+                                        }
+
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            visible: root.wifiNets.length === 0
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            color: theme.fgDim; font.pixelSize: 11
+                            text: "Procurando redes…"
+                        }
+
+                    }
                 }
             }
 
@@ -3144,6 +3441,62 @@ ShellRoot {
                                         color: theme.fg; font.pixelSize: 11
                                         wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
                                         text: (modelData["body"] || "")
+                                    }
+
+                                    // ---- resposta rapida, so em notificacao do celular ----
+                                    // Aparece no HISTORICO de proposito: a pilula some em
+                                    // segundos e ele pediu para poder responder depois.
+                                    // Funciona enquanto o app de origem nao cancelar a
+                                    // acao; quando cancelar, o celular devolve o motivo.
+                                    RowLayout {
+                                        visible: !!(modelData["podeResponder"]) && !!(modelData["chaveCel"])
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 4
+                                        spacing: 6
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 26
+                                            radius: 6
+                                            color: theme.surface2
+                                            TextInput {
+                                                id: campoResp
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 8; anchors.rightMargin: 8
+                                                verticalAlignment: TextInput.AlignVCenter
+                                                color: theme.fg; font.pixelSize: 11
+                                                clip: true
+                                                onAccepted: {
+                                                    notifPanel.responderCelular(modelData["chaveCel"], text);
+                                                    text = "";
+                                                }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    visible: campoResp.text === ""
+                                                    text: "responder…"
+                                                    color: theme.fgDim; font.pixelSize: 11
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            implicitWidth: 30; implicitHeight: 26
+                                            radius: 6
+                                            color: envHov.hovered ? theme.accent : Qt.alpha(theme.accent, 0.35)
+                                            HoverHandler { id: envHov }
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "\u{F048A}"
+                                                font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 13
+                                                color: theme.fg
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    notifPanel.responderCelular(modelData["chaveCel"], campoResp.text);
+                                                    campoResp.text = "";
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 // clique no corpo vai pra origem (so pelo appId: a acao

@@ -157,6 +157,28 @@ Scope {
         var d = new Date(ts);
         return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
     }
+    // O `phoned` marca o nome do aplicativo com " \u00b7 celular" quando a
+    // notificacao veio do Android. E o unico jeito de o painel saber a origem:
+    // pelo protocolo freedesktop chega tudo igual, venha do PC ou do celular.
+    readonly property string _marcaCelular: " \u00b7 celular"
+    function _doCelular(appName) {
+        return String(appName || "").indexOf(root._marcaCelular) >= 0;
+    }
+    function _semMarca(appName) {
+        return String(appName || "").replace(root._marcaCelular, "");
+    }
+
+    // Responde uma notificacao do celular. Vai por `phonectl`, e nao por socket
+    // direto, porque o phonectl ja resolve caminho do socket, protocolo e erro,
+    // e duplicar isso em QML so criaria um segundo lugar para quebrar.
+    Process { id: respProc }
+    function responderCelular(chave, texto) {
+        if (!chave || !texto || texto.trim().length === 0) return;
+        respProc.command = [Quickshell.env("HOME") + "/.local/bin/phonectl",
+                            "reply", chave, texto];
+        respProc.running = true;
+    }
+
     function _appIdDeCampos(desktopEntry, appName) {
         var de = String(desktopEntry || "").trim();
         if (de.length > 0) return de.replace(/\.desktop$/, "");
@@ -209,6 +231,11 @@ Scope {
             var registro = {
                 nid: String(id),
                 appName: notification.appName || "",
+                // Chave da notificacao no CELULAR. Vem por hint porque o
+                // protocolo freedesktop nao tem campo para isso, e sem ela nao
+                // ha como dizer qual conversa responder depois, no historico.
+                chaveCel: String(hints["x-phonelink-key"] || ""),
+                podeResponder: String(hints["x-phonelink-reply"] || "") === "1",
                 appIcon: icone,
                 appId: appId,
                 summary: notification.summary || "",
@@ -430,6 +457,7 @@ Scope {
         var h = root.historyList.slice();
         h.unshift({
             appName: reg.appName, appIcon: reg.appIcon, desktopEntry: reg.appId,
+            chaveCel: reg.chaveCel || "", podeResponder: reg.podeResponder || false,
             summary: reg.summary, body: reg.body, urgency: reg.critica ? 2 : 1, ts: reg.ts
         });
         if (h.length > root.historyCap) h = h.slice(0, root.historyCap);
@@ -563,7 +591,9 @@ Scope {
                                         horizontalAlignment: Text.AlignHCenter
                                         font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 15
                                         color: root.theme ? root.theme.accent : "#7d82d9"
-                                        text: "󰂚"
+                                        // celular tem glifo proprio: o sino generico nao
+                                        // diria de onde a mensagem veio, que e o ponto
+                                        text: root._doCelular(linha.appName) ? "󰄜" : "󰂚"
                                     }
                                     Text {
                                         Layout.fillWidth: true
